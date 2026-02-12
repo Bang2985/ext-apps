@@ -4,9 +4,15 @@ import io.modelcontextprotocol.json.McpJsonMapper;
 import io.modelcontextprotocol.json.jackson.JacksonMcpJsonMapperSupplier;
 import io.modelcontextprotocol.server.transport.HttpServletSseServerTransportProvider;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
+import jakarta.servlet.*;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.eclipse.jetty.ee10.servlet.FilterHolder;
 import org.eclipse.jetty.ee10.servlet.ServletContextHandler;
 import org.eclipse.jetty.ee10.servlet.ServletHolder;
+import java.io.IOException;
 import java.util.Arrays;
+import java.util.EnumSet;
 
 /**
  * Entry point for the basic-server-java MCP App example.
@@ -43,6 +49,7 @@ public class Main {
         Server.createServer(transport);
 
         var context = new ServletContextHandler();
+        context.addFilter(new FilterHolder(new CorsFilter()), "/*", EnumSet.of(DispatcherType.REQUEST));
         context.addServlet(new ServletHolder(transport), "/*");
 
         var server = new org.eclipse.jetty.server.Server(port);
@@ -50,5 +57,23 @@ public class Main {
         server.start();
         System.out.println("MCP server listening on http://localhost:" + port + "/sse");
         server.join();
+    }
+
+    /** Simple CORS filter that allows all origins (mirrors the cors() middleware used by JS examples). */
+    static class CorsFilter implements Filter {
+        @Override
+        public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+                throws IOException, ServletException {
+            var response = (HttpServletResponse) res;
+            response.setHeader("Access-Control-Allow-Origin", "*");
+            response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+            response.setHeader("Access-Control-Allow-Headers", "*");
+
+            if ("OPTIONS".equalsIgnoreCase(((HttpServletRequest) req).getMethod())) {
+                response.setStatus(HttpServletResponse.SC_OK);
+                return;
+            }
+            chain.doFilter(req, res);
+        }
     }
 }
