@@ -45,7 +45,7 @@ public class Main {
             <body>
               <p><strong>Server time:</strong> <code id="time">—</code></p>
               <script type="module">
-                import { App } from 'https://unpkg.com/@modelcontextprotocol/ext-apps@latest/dist/index.js';
+                import { App } from 'https://unpkg.com/@modelcontextprotocol/ext-apps@1.0.1/dist/src/app-with-deps.js';
                 const app = new App({ name: 'get-time-app', version: '1.0.0' });
                 app.ontoolinput = ({ toolInput }) => {
                   document.getElementById('time').textContent =
