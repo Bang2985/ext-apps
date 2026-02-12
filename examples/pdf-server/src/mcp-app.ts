@@ -758,9 +758,8 @@ async function fetchRange(
     });
 
     if (result.isError) {
-      const errorText = result.content
-        ?.map((c) => ("text" in c ? c.text : ""))
-        .join(" ") || "";
+      const errorText =
+        result.content?.map((c) => ("text" in c ? c.text : "")).join(" ") || "";
       throw new Error(`Tool error: ${errorText}`);
     }
 
@@ -846,8 +845,12 @@ async function loadPdfProgressively(urlToLoad: string): Promise<{
 
   try {
     const document = await loadingTask.promise;
-    totalBytes = (document as { _pdfInfo?: { contentLength?: number } })._pdfInfo?.contentLength || totalBytes;
-    log.info(`PDF document ready, ${document.numPages} pages, ${totalBytes} bytes`);
+    totalBytes =
+      (document as { _pdfInfo?: { contentLength?: number } })._pdfInfo
+        ?.contentLength || totalBytes;
+    log.info(
+      `PDF document ready, ${document.numPages} pages, ${totalBytes} bytes`,
+    );
     updateProgress(totalBytes, totalBytes);
     return { document, totalBytes };
   } catch (err: unknown) {
@@ -877,12 +880,7 @@ app.ontoolresult = async (result: CallToolResult) => {
   currentPage =
     savedPage && savedPage <= parsed.pageCount ? savedPage : parsed.initialPage;
 
-  log.info(
-    "URL:",
-    pdfUrl,
-    "Starting at page:",
-    currentPage,
-  );
+  log.info("URL:", pdfUrl, "Starting at page:", currentPage);
 
   showLoading("Loading PDF...");
 
