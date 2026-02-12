@@ -1776,11 +1776,18 @@ if (permissions?.geolocation) allowList.push('geolocation');
 const allowAttribute = allowList.join(' ');
 ```
 
+**Why `'unsafe-eval'` and `'unsafe-inline'` are acceptable here:**
+
+These CSP headers are enforced on the **sandbox domain** (e.g., `*.claudemcpcontent.com`), not on the host's own origin (e.g., `claude.ai`). The sandbox domain is a dedicated throwaway origin with no user data, no cookies, and no storage shared with the host. Code executing inside the sandbox cannot access the host page's DOM, credentials, or storage due to the browser's same-origin policy — regardless of what CSP is applied. The only exit path is via `postMessage`, which the host validates independently of CSP.
+
+The host's own origin SHOULD maintain a strict CSP (e.g., `'strict-dynamic'`, no `'unsafe-eval'`). The permissive directives described here apply exclusively to the sandbox origin.
+
 **Security Requirements:**
 
 - Host MUST block connections to undeclared domains
 - Host SHOULD warn users when UI requires external domain access
 - Host MAY implement global domain allowlists/blocklists
+- Host's own origin MUST NOT use the sandbox CSP — only apply it to the dedicated sandbox domain
 
 ### Other risks
 
