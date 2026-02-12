@@ -88,10 +88,17 @@ The [`examples/`](https://github.com/modelcontextprotocol/ext-apps/tree/main/exa
 
 | | |
 |:---:|:---|
-| [![Basic](examples/basic-server-react/grid-cell.png "Starter template")](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-react) | The same app built with different frameworks — pick your favorite!<br><br>[React](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-react) · [Vue](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-vue) · [Svelte](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-svelte) · [Preact](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-preact) · [Solid](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-solid) · [Vanilla JS](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-vanillajs) |
+| [![Basic](examples/basic-server-react/grid-cell.png "Starter template")](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-react) | The same app built with different frameworks — pick your favorite!<br><br>[React](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-react) · [Vue](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-vue) · [Svelte](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-svelte) · [Preact](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-preact) · [Solid](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-solid) · [Vanilla JS](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-vanillajs) · [Java](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/basic-server-java) |
 <!-- prettier-ignore-end -->
 
 ### Running the Examples
+
+#### Prerequisites
+
+Most examples require only Node.js 18+. A few have additional requirements:
+
+- **Python examples** (`qr-server`, `say-server`): [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- **Java example** (`basic-server-java`): Java 17+ and Maven 3.6+
 
 #### With basic-host
 
@@ -306,6 +313,13 @@ To use these examples with MCP clients that support the stdio transport (such as
         "--stdio"
       ]
     },
+    "basic-java": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "cd /path/to/ext-apps/examples/basic-server-java && mvn -B package -DskipTests -q >&2 && java -jar target/basic-server-java-1.0.0.jar --stdio"
+      ]
+    },
     "qr": {
       "command": "uv",
       "args": [
@@ -331,7 +345,7 @@ To use these examples with MCP clients that support the stdio transport (such as
 </details>
 
 > [!NOTE]
-> The `qr` server requires cloning the repository first. See [qr-server README](https://github.com/modelcontextprotocol/ext-apps/tree/main/examples/qr-server) for details.
+> The `qr` and `basic-java` servers require cloning the repository first. See their README files for details.
 
 #### Local Development
 
@@ -482,6 +496,13 @@ Then configure your MCP client to build and run the local server. Replace `~/cod
       "args": [
         "-c",
         "cd ~/code/ext-apps/examples/wiki-explorer-server && npm run build >&2 && node dist/index.js --stdio"
+      ]
+    },
+    "basic-java": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "cd ~/code/ext-apps/examples/basic-server-java && mvn -B package -DskipTests -q >&2 && java -jar target/basic-server-java-1.0.0.jar --stdio"
       ]
     },
     "qr": {
