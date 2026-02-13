@@ -638,47 +638,14 @@ describe("App <-> AppBridge integration", () => {
       );
     });
 
-    it("double-connect on same transport would have caused unknown message ID errors", async () => {
-      // Regression test: before the double-connect guard was added, calling
-      // connect() twice on the same transport caused the MCP Protocol to chain
-      // onmessage handlers, processing each incoming message twice. This caused
-      // the second processing of a response to fail with "unknown message ID"
-      // because the first processing already consumed the response handler.
-      //
-      // This test verifies that the guard prevents this scenario entirely.
-      bridge.onupdatemodelcontext = async () => ({});
-
+    it("AppBridge.connect() throws even when called with the same transport", async () => {
       await bridge.connect(bridgeTransport);
       await app.connect(appTransport);
 
-      // After close(), reconnection should be allowed
-      await bridgeTransport.close();
-      const [newAppTransport, newBridgeTransport] =
-        InMemoryTransport.createLinkedPair();
-      const newBridge = new AppBridge(
-        createMockClient() as Client,
-        testHostInfo,
-        testHostCapabilities,
+      // Should throw regardless of whether it's the same or a different transport
+      await expect(bridge.connect(bridgeTransport)).rejects.toThrow(
+        "AppBridge is already connected",
       );
-      const newApp = new App(testAppInfo, {}, { autoResize: false });
-
-      const errors: Error[] = [];
-      newBridge.onerror = (e) => errors.push(e);
-      newApp.onerror = (e) => errors.push(e);
-      newBridge.onupdatemodelcontext = async () => ({});
-
-      await newBridge.connect(newBridgeTransport);
-      await newApp.connect(newAppTransport);
-
-      // This request (id=1) should be processed exactly once
-      await newApp.updateModelContext({
-        content: [{ type: "text", text: "test" }],
-      });
-
-      expect(errors).toHaveLength(0);
-
-      await newAppTransport.close();
-      await newBridgeTransport.close();
     });
   });
 
