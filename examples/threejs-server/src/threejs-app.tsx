@@ -229,7 +229,10 @@ export default function ThreeJSApp({
 
   // Sync display mode from host context
   useEffect(() => {
-    if (hostContext?.displayMode === "inline" || hostContext?.displayMode === "fullscreen") {
+    if (
+      hostContext?.displayMode === "inline" ||
+      hostContext?.displayMode === "fullscreen"
+    ) {
       setCurrentDisplayMode(hostContext.displayMode);
     }
   }, [hostContext?.displayMode]);
