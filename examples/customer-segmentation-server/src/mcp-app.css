@@ -40,8 +40,7 @@
   --color-startup: light-dark(#6366f1, #818cf8);
 }
 
-html,
-body {
+html, body {
   margin: 0;
   padding: 0;
   font-family: var(--font-sans);
@@ -224,18 +223,10 @@ body {
   color: white;
 }
 
-.detail-segment.enterprise {
-  background: var(--color-enterprise);
-}
-.detail-segment.mid-market {
-  background: var(--color-midmarket);
-}
-.detail-segment.smb {
-  background: var(--color-smb);
-}
-.detail-segment.startup {
-  background: var(--color-startup);
-}
+.detail-segment.enterprise { background: var(--color-enterprise); }
+.detail-segment.mid-market { background: var(--color-midmarket); }
+.detail-segment.smb { background: var(--color-smb); }
+.detail-segment.startup { background: var(--color-startup); }
 
 .detail-metric {
   color: var(--color-text-secondary);
