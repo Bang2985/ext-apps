@@ -1537,16 +1537,13 @@ export class AppBridge extends Protocol<
       // Set up task forwarding if the host advertises task capabilities
       if (this._capabilities.tasks?.toolsCall) {
         // Forward tasks/get requests to the MCP server
-        this.setRequestHandler(
-          GetTaskRequestSchema,
-          async (request, extra) => {
-            return this._client!.request(
-              { method: "tasks/get", params: request.params },
-              GetTaskResultSchema,
-              { signal: extra.signal },
-            );
-          },
-        );
+        this.setRequestHandler(GetTaskRequestSchema, async (request, extra) => {
+          return this._client!.request(
+            { method: "tasks/get", params: request.params },
+            GetTaskResultSchema,
+            { signal: extra.signal },
+          );
+        });
 
         // Forward tasks/result requests to the MCP server
         this.setRequestHandler(
@@ -1585,9 +1582,8 @@ export class AppBridge extends Protocol<
         );
 
         // Forward task status notifications from the MCP server to the view
-        this._client.setNotificationHandler(
-          TaskStatusNotificationSchema,
-          (n) => this.sendTaskStatusChanged(n.params),
+        this._client.setNotificationHandler(TaskStatusNotificationSchema, (n) =>
+          this.sendTaskStatusChanged(n.params),
         );
       }
     }
