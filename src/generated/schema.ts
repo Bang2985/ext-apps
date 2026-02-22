@@ -523,6 +523,24 @@ export const McpUiHostCapabilitiesSchema = z.object({
   message: McpUiSupportedContentBlockModalitiesSchema.optional().describe(
     "Host supports receiving content messages (ui/message) from the view.",
   ),
+  /**
+   * @description Host can proxy task operations (tasks/get, tasks/result, tasks/list, tasks/cancel) to the MCP server.
+   *
+   * When present, the App can create tasks via task-augmented `callServerTool()` requests
+   * and poll for results using the task management methods.
+   */
+  tasks: z
+    .object({
+      /** @description Host supports task-augmented tools/call requests. */
+      toolsCall: z
+        .object({})
+        .optional()
+        .describe("Host supports task-augmented tools/call requests."),
+    })
+    .optional()
+    .describe(
+      "Host can proxy task operations (tasks/get, tasks/result, tasks/list, tasks/cancel) to the MCP server.\n\nWhen present, the App can create tasks via task-augmented `callServerTool()` requests\nand poll for results using the task management methods.",
+    ),
 });
 
 /**

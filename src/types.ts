@@ -129,13 +129,20 @@ export {
 import {
   CallToolRequest,
   CallToolResult,
+  CancelTaskRequest,
+  CancelTaskResult,
   EmptyResult,
+  GetTaskPayloadRequest,
+  GetTaskRequest,
+  GetTaskResult,
   ListPromptsRequest,
   ListPromptsResult,
   ListResourcesRequest,
   ListResourcesResult,
   ListResourceTemplatesRequest,
   ListResourceTemplatesResult,
+  ListTasksRequest,
+  ListTasksResult,
   ListToolsRequest,
   ListToolsResult,
   LoggingMessageNotification,
@@ -144,6 +151,7 @@ import {
   ReadResourceRequest,
   ReadResourceResult,
   ResourceListChangedNotification,
+  TaskStatusNotification,
   ToolListChangedNotification,
 } from "@modelcontextprotocol/sdk/types.js";
 
@@ -154,6 +162,7 @@ import {
  * - MCP UI requests (initialize, open-link, message, resource-teardown, request-display-mode)
  * - MCP server requests forwarded from the app (tools/call, tools/list, resources/list,
  *   resources/templates/list, resources/read, prompts/list)
+ * - Task management requests (tasks/get, tasks/result, tasks/list, tasks/cancel)
  * - Protocol requests (ping)
  */
 export type AppRequest =
@@ -169,6 +178,10 @@ export type AppRequest =
   | ListResourceTemplatesRequest
   | ReadResourceRequest
   | ListPromptsRequest
+  | GetTaskRequest
+  | GetTaskPayloadRequest
+  | ListTasksRequest
+  | CancelTaskRequest
   | PingRequest;
 
 /**
@@ -195,6 +208,7 @@ export type AppNotification =
   | ToolListChangedNotification
   | ResourceListChangedNotification
   | PromptListChangedNotification
+  | TaskStatusNotification
   // Received from app
   | McpUiInitializedNotification
   | McpUiSizeChangedNotification
@@ -216,4 +230,7 @@ export type AppResult =
   | ListResourceTemplatesResult
   | ReadResourceResult
   | ListPromptsResult
+  | GetTaskResult
+  | ListTasksResult
+  | CancelTaskResult
   | EmptyResult;

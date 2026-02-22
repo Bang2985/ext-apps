@@ -12,9 +12,17 @@
 
 import type {
   CallToolResult,
+  CancelTaskRequest,
+  CancelTaskResult,
   ContentBlock,
+  GetTaskPayloadRequest,
+  GetTaskRequest,
+  GetTaskResult,
   Implementation,
+  ListTasksRequest,
+  ListTasksResult,
   RequestId,
+  TaskStatusNotification,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
@@ -473,6 +481,16 @@ export interface McpUiHostCapabilities {
   updateModelContext?: McpUiSupportedContentBlockModalities;
   /** @description Host supports receiving content messages (ui/message) from the view. */
   message?: McpUiSupportedContentBlockModalities;
+  /**
+   * @description Host can proxy task operations (tasks/get, tasks/result, tasks/list, tasks/cancel) to the MCP server.
+   *
+   * When present, the App can create tasks via task-augmented `callServerTool()` requests
+   * and poll for results using the task management methods.
+   */
+  tasks?: {
+    /** @description Host supports task-augmented tools/call requests. */
+    toolsCall?: {};
+  };
 }
 
 /**

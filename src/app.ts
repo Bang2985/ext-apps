@@ -15,6 +15,9 @@ import {
   ListToolsRequestSchema,
   LoggingMessageNotification,
   PingRequestSchema,
+  Task,
+  TaskStatusNotification,
+  TaskStatusNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { AppNotification, AppRequest, AppResult } from "./types";
 import { PostMessageTransport } from "./message-transport";
@@ -506,6 +509,32 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
   }
 
   /**
+   * Convenience handler for task status change notifications from the host.
+   *
+   * Set this property to register a handler that will be called when a task's
+   * status changes. This is useful for monitoring long-running operations
+   * created via task-augmented `callServerTool()` requests.
+   *
+   * This setter is a convenience wrapper around `setNotificationHandler()` that
+   * automatically handles the notification schema and extracts the task data.
+   *
+   * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
+   *
+   * @param callback - Function called with the updated `Task` object
+   *
+   * @experimental Task support is experimental and may change without notice.
+   *
+   * @see {@link setNotificationHandler `setNotificationHandler`} for the underlying method
+   * @see {@link getTask `getTask`} for polling task status
+   * @see {@link callServerTool `callServerTool`} for creating tasks
+   */
+  set ontaskstatuschanged(callback: (task: Task) => void) {
+    this.setNotificationHandler(TaskStatusNotificationSchema, (n) =>
+      callback(n.params),
+    );
+  }
+
+  /**
    * Convenience handler for graceful shutdown requests from the host.
    *
    * Set this property to register a handler that will be called when the host
@@ -670,19 +699,39 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
   }
 
   /**
-   * Verify that task creation is supported for the given request method.
+   * Verify that the host supports task creation for the given request method.
+   *
+   * Called when the App makes a task-augmented request (e.g., `callServerTool` with task options).
+   * Checks that the host advertised the `tasks` capability during initialization.
+   *
    * @internal
    */
-  protected assertTaskCapability(_method: string): void {
-    throw new Error("Tasks are not supported in MCP Apps");
+  protected assertTaskCapability(method: string): void {
+    if (method === "tools/call") {
+      if (!this._hostCapabilities?.tasks?.toolsCall) {
+        throw new Error(
+          `Host does not support task creation for ${method}. ` +
+            `Check that the host advertises the tasks.toolsCall capability.`,
+        );
+      }
+      return;
+    }
+    // Other methods don't support task creation in the MCP Apps protocol
   }
 
   /**
    * Verify that task handler is supported for the given method.
+   *
+   * The App (view) does not handle task-augmented requests from the host,
+   * so this is a no-op for task management methods registered during initialization.
+   *
    * @internal
    */
   protected assertTaskHandlerCapability(_method: string): void {
-    throw new Error("Task handlers are not supported in MCP Apps");
+    // Task management request handlers (tasks/get, tasks/result, etc.) are registered
+    // by the Protocol base class when a taskStore is provided. The App doesn't use a
+    // taskStore, so this is effectively a no-op. We don't throw here to avoid breaking
+    // the Protocol constructor initialization.
   }
 
   /**

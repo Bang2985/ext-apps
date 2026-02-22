@@ -283,6 +283,19 @@
             }
           },
           "additionalProperties": false
+        },
+        "tasks": {
+          "description": "Host can proxy task operations (tasks/get, tasks/result, tasks/list, tasks/cancel) to the MCP server.\n\nWhen present, the App can create tasks via task-augmented `callServerTool()` requests\nand poll for results using the task management methods.",
+          "type": "object",
+          "properties": {
+            "toolsCall": {
+              "description": "Host supports task-augmented tools/call requests.",
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -2623,6 +2636,19 @@
                 },
                 "structuredContent": {
                   "description": "Host supports structured content.",
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "tasks": {
+              "description": "Host can proxy task operations (tasks/get, tasks/result, tasks/list, tasks/cancel) to the MCP server.\n\nWhen present, the App can create tasks via task-augmented `callServerTool()` requests\nand poll for results using the task management methods.",
+              "type": "object",
+              "properties": {
+                "toolsCall": {
+                  "description": "Host supports task-augmented tools/call requests.",
                   "type": "object",
                   "properties": {},
                   "additionalProperties": false

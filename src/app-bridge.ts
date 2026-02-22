@@ -5,7 +5,14 @@ import {
   CallToolRequestSchema,
   CallToolResult,
   CallToolResultSchema,
+  CancelTaskRequestSchema,
+  CancelTaskResult,
+  CancelTaskResultSchema,
   EmptyResult,
+  GetTaskPayloadRequestSchema,
+  GetTaskRequestSchema,
+  GetTaskResult,
+  GetTaskResultSchema,
   Implementation,
   ListPromptsRequest,
   ListPromptsRequestSchema,
@@ -19,6 +26,9 @@ import {
   ListResourceTemplatesRequestSchema,
   ListResourceTemplatesResult,
   ListResourceTemplatesResultSchema,
+  ListTasksRequestSchema,
+  ListTasksResult,
+  ListTasksResultSchema,
   LoggingMessageNotification,
   LoggingMessageNotificationSchema,
   PingRequest,
@@ -31,6 +41,9 @@ import {
   ReadResourceResultSchema,
   ResourceListChangedNotification,
   ResourceListChangedNotificationSchema,
+  Task,
+  TaskStatusNotification,
+  TaskStatusNotificationSchema,
   Tool,
   ToolListChangedNotification,
   ToolListChangedNotificationSchema,
@@ -1037,18 +1050,37 @@ export class AppBridge extends Protocol<
 
   /**
    * Verify that task creation is supported for the given request method.
+   *
+   * Called when the AppBridge sends a task-augmented request to the App.
+   * This is not a typical flow in MCP Apps, so this is a no-op.
+   *
    * @internal
    */
   protected assertTaskCapability(_method: string): void {
-    throw new Error("Tasks are not supported in MCP Apps");
+    // The AppBridge (host side) does not typically send task-augmented
+    // requests to the App, so this is a no-op.
   }
 
   /**
    * Verify that task handler is supported for the given method.
+   *
+   * Called when the AppBridge receives a task-augmented request from the App.
+   * Allows task-augmented `tools/call` when the host advertises `tasks.toolsCall` capability.
+   *
    * @internal
    */
-  protected assertTaskHandlerCapability(_method: string): void {
-    throw new Error("Task handlers are not supported in MCP Apps");
+  protected assertTaskHandlerCapability(method: string): void {
+    if (method === "tools/call") {
+      if (!this._capabilities.tasks?.toolsCall) {
+        throw new Error(
+          `Host does not support task-augmented ${method}. ` +
+            `Add tasks.toolsCall to the host capabilities.`,
+        );
+      }
+      return;
+    }
+    // Task management methods (tasks/get, tasks/result, tasks/list, tasks/cancel)
+    // are handled via explicit request handlers, no capability check needed.
   }
 
   /**
@@ -1290,6 +1322,26 @@ export class AppBridge extends Protocol<
   }
 
   /**
+   * Notify the view that a task's status has changed.
+   *
+   * The host sends `notifications/tasks/status` to the view when a task's
+   * status changes on the MCP server. This allows the view to update its
+   * UI accordingly without polling.
+   *
+   * @param task - The updated task object with current status
+   *
+   * @experimental Task support is experimental and may change without notice.
+   *
+   * @see `Task` from @modelcontextprotocol/sdk for the task object structure
+   */
+  sendTaskStatusChanged(task: Task) {
+    return this.notification({
+      method: "notifications/tasks/status" as const,
+      params: task,
+    });
+  }
+
+  /**
    * Send HTML resource to the sandbox proxy for secure loading.
    *
    * This is an internal method used by web-based hosts implementing the
@@ -1480,6 +1532,63 @@ export class AppBridge extends Protocol<
             (n) => this.sendPromptListChanged(n.params),
           );
         }
+      }
+
+      // Set up task forwarding if the host advertises task capabilities
+      if (this._capabilities.tasks?.toolsCall) {
+        // Forward tasks/get requests to the MCP server
+        this.setRequestHandler(
+          GetTaskRequestSchema,
+          async (request, extra) => {
+            return this._client!.request(
+              { method: "tasks/get", params: request.params },
+              GetTaskResultSchema,
+              { signal: extra.signal },
+            );
+          },
+        );
+
+        // Forward tasks/result requests to the MCP server
+        this.setRequestHandler(
+          GetTaskPayloadRequestSchema,
+          async (request, extra) => {
+            return this._client!.request(
+              { method: "tasks/result", params: request.params },
+              CallToolResultSchema,
+              { signal: extra.signal },
+            );
+          },
+        );
+
+        // Forward tasks/list requests to the MCP server
+        this.setRequestHandler(
+          ListTasksRequestSchema,
+          async (request, extra) => {
+            return this._client!.request(
+              { method: "tasks/list", params: request.params },
+              ListTasksResultSchema,
+              { signal: extra.signal },
+            );
+          },
+        );
+
+        // Forward tasks/cancel requests to the MCP server
+        this.setRequestHandler(
+          CancelTaskRequestSchema,
+          async (request, extra) => {
+            return this._client!.request(
+              { method: "tasks/cancel", params: request.params },
+              CancelTaskResultSchema,
+              { signal: extra.signal },
+            );
+          },
+        );
+
+        // Forward task status notifications from the MCP server to the view
+        this._client.setNotificationHandler(
+          TaskStatusNotificationSchema,
+          (n) => this.sendTaskStatusChanged(n.params),
+        );
       }
     }
 
