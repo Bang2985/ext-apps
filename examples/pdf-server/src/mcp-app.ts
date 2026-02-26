@@ -2065,6 +2065,13 @@ function renderAnnotationPanel(): void {
         } else {
           selectAnnotation(def.id);
           pulseAnnotation(def.id);
+          // Scroll the annotation into view
+          if (tracked.elements.length > 0) {
+            tracked.elements[0].scrollIntoView({
+              behavior: "smooth",
+              block: "center",
+            });
+          }
         }
       });
 
@@ -2139,6 +2146,26 @@ function renderAnnotationPanel(): void {
         persistAnnotations();
       });
       row.appendChild(deleteBtn);
+
+      // Click handler: navigate to page and focus form input
+      card.addEventListener("click", () => {
+        const fieldPage = fieldNameToPage.get(name) ?? 1;
+        const focusField = () => {
+          const input = formLayerEl.querySelector(
+            `[name="${CSS.escape(name)}"]`,
+          ) as HTMLElement | null;
+          if (input) {
+            input.focus();
+            input.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        };
+        if (fieldPage !== currentPage) {
+          goToPage(fieldPage);
+          setTimeout(focusField, 300);
+        } else {
+          focusField();
+        }
+      });
 
       card.appendChild(row);
       annotationsPanelListEl.appendChild(card);
