@@ -811,23 +811,27 @@ body {
 /* Floating panel in inline mode */
 .annotation-panel.floating {
   position: absolute;
-  top: 0;
-  right: 0;
   z-index: 20;
-  border-left: 1px solid var(--bg200);
-  border-bottom: 1px solid var(--bg200);
-  border-radius: 0 0 0 8px;
-  box-shadow: -2px 2px 8px rgba(0, 0, 0, 0.15);
-  max-height: 100%;
-  width: 220px;
+  border: 1px solid var(--bg200);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  max-height: 60%;
+  width: 180px;
+  transition: top 0.15s ease, left 0.15s ease, right 0.15s ease, bottom 0.15s ease;
+}
+.annotation-panel.floating .annotation-panel-header {
+  cursor: grab;
+}
+.annotation-panel.floating.dragging .annotation-panel-header {
+  cursor: grabbing;
 }
 
 /* Accordion section headers */
 .annotation-section-header {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 600;
   color: var(--text100);
-  padding: 0.4rem 0.75rem;
+  padding: 0.3rem 0.6rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   cursor: pointer;
@@ -848,11 +852,8 @@ body {
   color: var(--text000);
 }
 .annotation-section-chevron {
-  font-size: 0.6rem;
+  font-size: 0.55rem;
   transition: transform 0.15s ease;
-}
-.annotation-section-header.open .annotation-section-chevron {
-  transform: rotate(180deg);
 }
 .annotation-section-body {
   display: none;

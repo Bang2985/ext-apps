@@ -1067,6 +1067,14 @@ function selectAnnotation(id: string | null, additive = false): void {
 
   // Sync sidebar
   syncSidebarSelection();
+  // Auto-dock floating panel away from selected annotation
+  if (
+    selectedAnnotationIds.size > 0 &&
+    annotationsPanelEl.classList.contains("floating") &&
+    annotationPanelOpen
+  ) {
+    autoDockPanel();
+  }
   // Update model context with selection info
   updatePageContext();
 }
@@ -1750,6 +1758,73 @@ function removeAnnotation(id: string, skipUndo = false): void {
 // Annotation Panel
 // =============================================================================
 
+/** Position the floating panel based on its anchored corner. */
+function applyFloatingPanelPosition(): void {
+  const el = annotationsPanelEl;
+  // Reset all position props
+  el.style.top = "";
+  el.style.bottom = "";
+  el.style.left = "";
+  el.style.right = "";
+  switch (floatingPanelCorner) {
+    case "top-right":
+      el.style.top = "0";
+      el.style.right = "0";
+      break;
+    case "top-left":
+      el.style.top = "0";
+      el.style.left = "0";
+      break;
+    case "bottom-right":
+      el.style.bottom = "0";
+      el.style.right = "0";
+      break;
+    case "bottom-left":
+      el.style.bottom = "0";
+      el.style.left = "0";
+      break;
+  }
+}
+
+/** Auto-dock the floating panel to the opposite side if it overlaps selected annotations. */
+function autoDockPanel(): void {
+  const panelRect = annotationsPanelEl.getBoundingClientRect();
+  let overlaps = false;
+  for (const selId of selectedAnnotationIds) {
+    const tracked = annotationMap.get(selId);
+    if (!tracked) continue;
+    for (const el of tracked.elements) {
+      const elRect = el.getBoundingClientRect();
+      // Check overlap
+      if (
+        panelRect.left < elRect.right &&
+        panelRect.right > elRect.left &&
+        panelRect.top < elRect.bottom &&
+        panelRect.bottom > elRect.top
+      ) {
+        overlaps = true;
+        break;
+      }
+    }
+    if (overlaps) break;
+  }
+  if (overlaps) {
+    // Swap left ↔ right
+    if (floatingPanelCorner.includes("right")) {
+      floatingPanelCorner = floatingPanelCorner.replace(
+        "right",
+        "left",
+      ) as PanelCorner;
+    } else {
+      floatingPanelCorner = floatingPanelCorner.replace(
+        "left",
+        "right",
+      ) as PanelCorner;
+    }
+    applyFloatingPanelPosition();
+  }
+}
+
 function setAnnotationPanelOpen(open: boolean): void {
   annotationPanelOpen = open;
   annotationsBtn.classList.toggle("active", open);
@@ -1760,6 +1835,7 @@ function setAnnotationPanelOpen(open: boolean): void {
     annotationsPanelEl.classList.toggle("floating", true);
     annotationsPanelEl.style.display = open ? "" : "none";
     if (open) {
+      applyFloatingPanelPosition();
       renderAnnotationPanel();
     }
   } else {
@@ -1892,6 +1968,10 @@ function getAnnotationY(def: PdfAnnotationDef): number {
 /** Track which accordion section is open (e.g. "page-3" or "formFields"). */
 let openAccordionSection: string | null = null;
 
+/** Which corner the floating panel is anchored to. */
+type PanelCorner = "top-right" | "top-left" | "bottom-right" | "bottom-left";
+let floatingPanelCorner: PanelCorner = "top-right";
+
 function renderAnnotationPanel(): void {
   if (!annotationPanelOpen) return;
 
@@ -1980,7 +2060,7 @@ function appendAccordionSection(
 
   const chevron = document.createElement("span");
   chevron.className = "annotation-section-chevron";
-  chevron.textContent = "▼";
+  chevron.textContent = isOpen ? "▼" : "▶";
   header.appendChild(chevron);
 
   header.addEventListener("click", () => {
@@ -2282,6 +2362,108 @@ function initAnnotationPanel(): void {
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
   });
+
+  // Floating panel drag-to-reposition
+  const panelHeader = annotationsPanelEl.querySelector(
+    ".annotation-panel-header",
+  ) as HTMLElement;
+  if (panelHeader) {
+    panelHeader.addEventListener("mousedown", (e) => {
+      if (!annotationsPanelEl.classList.contains("floating")) return;
+      // Ignore clicks on buttons within header
+      if ((e.target as HTMLElement).closest("button")) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const container = annotationsPanelEl.parentElement!;
+      const containerRect = container.getBoundingClientRect();
+      let moved = false;
+
+      // Temporarily position absolutely during drag
+      const panelRect = annotationsPanelEl.getBoundingClientRect();
+      let curLeft = panelRect.left - containerRect.left;
+      let curTop = panelRect.top - containerRect.top;
+
+      // Switch to left/top positioning for free drag
+      annotationsPanelEl.style.right = "";
+      annotationsPanelEl.style.bottom = "";
+      annotationsPanelEl.style.left = `${curLeft}px`;
+      annotationsPanelEl.style.top = `${curTop}px`;
+      annotationsPanelEl.style.transition = "none";
+      annotationsPanelEl.classList.add("dragging");
+
+      const onMouseMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+        const newLeft = Math.max(
+          0,
+          Math.min(
+            curLeft + dx,
+            containerRect.width - annotationsPanelEl.offsetWidth,
+          ),
+        );
+        const newTop = Math.max(
+          0,
+          Math.min(
+            curTop + dy,
+            containerRect.height - annotationsPanelEl.offsetHeight,
+          ),
+        );
+        annotationsPanelEl.style.left = `${newLeft}px`;
+        annotationsPanelEl.style.top = `${newTop}px`;
+      };
+
+      const onMouseUp = () => {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        annotationsPanelEl.classList.remove("dragging");
+        annotationsPanelEl.style.transition = "";
+
+        if (!moved) return;
+
+        // Snap to nearest corner (magnetic anchor)
+        const finalRect = annotationsPanelEl.getBoundingClientRect();
+        const cx = finalRect.left + finalRect.width / 2 - containerRect.left;
+        const cy = finalRect.top + finalRect.height / 2 - containerRect.top;
+        const midX = containerRect.width / 2;
+        const midY = containerRect.height / 2;
+
+        const isRight = cx > midX;
+        const isBottom = cy > midY;
+        floatingPanelCorner = isBottom
+          ? isRight
+            ? "bottom-right"
+            : "bottom-left"
+          : isRight
+            ? "top-right"
+            : "top-left";
+
+        applyFloatingPanelPosition();
+        try {
+          localStorage.setItem("pdf-panel-corner", floatingPanelCorner);
+        } catch {
+          /* ignore */
+        }
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+    });
+  }
+
+  // Restore saved corner
+  try {
+    const saved = localStorage.getItem("pdf-panel-corner");
+    if (
+      saved &&
+      ["top-right", "top-left", "bottom-right", "bottom-left"].includes(saved)
+    ) {
+      floatingPanelCorner = saved as PanelCorner;
+    }
+  } catch {
+    /* ignore */
+  }
 
   // Toggle button
   annotationsBtn.addEventListener("click", toggleAnnotationPanel);
