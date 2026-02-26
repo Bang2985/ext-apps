@@ -993,6 +993,9 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           ),
       },
       outputSchema: z.object({
+        viewUUID: z
+          .string()
+          .describe("UUID for this viewer instance — pass to interact tool"),
         url: z.string(),
         initialPage: z.number(),
         totalBytes: z.number(),
