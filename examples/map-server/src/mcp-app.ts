@@ -397,6 +397,7 @@ async function initCesium(): Promise<any> {
   // CesiumJS sets image-rendering: pixelated by default which looks bad on scaled displays
   // Setting to "auto" allows the browser to apply smooth interpolation
   cesiumViewer.canvas.style.imageRendering = "auto";
+
   // Note: DO NOT set resolutionScale = devicePixelRatio here!
   // When useBrowserRecommendedResolution: false, Cesium already uses devicePixelRatio.
   // Setting resolutionScale = devicePixelRatio would double the scaling (e.g., 2x2=4x on Retina)
@@ -743,88 +744,85 @@ function bboxFromCenter(
   };
 }
 
-// Handle initial tool input (bounding box or center+radius from show-map tool)
-app.ontoolinput = async (params) => {
-  log.info("Received tool input:", params);
-  const args = params.arguments as
-    | {
-        boundingBox?: BoundingBox;
-        west?: number;
-        south?: number;
-        east?: number;
-        north?: number;
-        latitude?: number;
-        longitude?: number;
-        radiusKm?: number;
-        label?: string;
-        markers?: (MarkerDef & { id: string })[];
-      }
-    | undefined;
-
-  if (args && viewer) {
-    // Resolve bounding box
-    let bbox: BoundingBox | null = null;
-
-    if (args.boundingBox) {
-      bbox = args.boundingBox;
-    } else if (
-      args.west !== undefined &&
-      args.south !== undefined &&
-      args.east !== undefined &&
-      args.north !== undefined
-    ) {
-      bbox = {
-        west: args.west,
-        south: args.south,
-        east: args.east,
-        north: args.north,
-      };
-    } else if (args.latitude !== undefined && args.longitude !== undefined) {
-      bbox = bboxFromCenter(args.latitude, args.longitude, args.radiusKm ?? 50);
-    }
-
-    if (bbox) {
-      hasReceivedToolInput = true;
-      log.info("Positioning camera to bbox:", bbox);
-      setViewToBoundingBox(viewer, bbox);
-      await waitForTilesLoaded(viewer);
-      hideLoading();
-      log.info(
-        "Camera positioned, tiles loaded. Height:",
-        viewer.camera.positionCartographic.height,
-      );
-    }
-
-    // Add initial markers from tool input
-    if (args.markers && args.markers.length > 0) {
-      for (const m of args.markers) {
-        addMarker(viewer, m.id, m.latitude, m.longitude, m.label, m.color);
-      }
-      log.info(
-        "Added",
-        args.markers.length,
-        "initial marker(s) from tool input",
-      );
-    }
-  }
-};
-
 // =============================================================================
-// Command Queue Polling
+// Annotation Types & Tracking
 // =============================================================================
 
-interface MarkerDef {
-  latitude: number;
-  longitude: number;
-  label?: string;
-  color?: string;
-}
+/** Discriminated union for all annotation types (mirrors server-side AnnotationDef) */
+type AnnotationDef =
+  | {
+      type: "marker";
+      id: string;
+      latitude: number;
+      longitude: number;
+      label?: string;
+      color?: string;
+    }
+  | {
+      type: "route";
+      id: string;
+      points: { latitude: number; longitude: number }[];
+      label?: string;
+      color?: string;
+      width?: number;
+      dashed?: boolean;
+    }
+  | {
+      type: "area";
+      id: string;
+      points: { latitude: number; longitude: number }[];
+      label?: string;
+      color?: string;
+      fillColor?: string;
+    }
+  | {
+      type: "circle";
+      id: string;
+      latitude: number;
+      longitude: number;
+      radiusKm: number;
+      label?: string;
+      color?: string;
+      fillColor?: string;
+    };
 
-interface TrackedMarker extends MarkerDef {
-  id: string;
-  pointEntity: any; // Cesium.Entity for the dot
-  labelEntity: any; // Cesium.Entity for the billboard label (or null)
-}
+/** Partial updates — id + type required, everything else optional */
+type AnnotationUpdate =
+  | {
+      type: "marker";
+      id: string;
+      latitude?: number;
+      longitude?: number;
+      label?: string;
+      color?: string;
+    }
+  | {
+      type: "route";
+      id: string;
+      points?: { latitude: number; longitude: number }[];
+      label?: string;
+      color?: string;
+      width?: number;
+      dashed?: boolean;
+    }
+  | {
+      type: "area";
+      id: string;
+      points?: { latitude: number; longitude: number }[];
+      label?: string;
+      color?: string;
+      fillColor?: string;
+    }
+  | {
+      type: "circle";
+      id: string;
+      latitude?: number;
+      longitude?: number;
+      radiusKm?: number;
+      label?: string;
+      color?: string;
+      fillColor?: string;
+    };
 
 type MapCommand =
   | {
@@ -836,106 +834,43 @@ type MapCommand =
       label?: string;
       fly?: boolean;
     }
-  | {
-      type: "add_markers";
-      markers: (MarkerDef & { id: string })[];
-    }
-  | {
-      type: "update_markers";
-      markers: {
-        id: string;
-        latitude?: number;
-        longitude?: number;
-        label?: string;
-        color?: string;
-      }[];
-    }
-  | {
-      type: "remove_markers";
-      ids: string[];
-    };
+  | { type: "add"; annotations: AnnotationDef[] }
+  | { type: "update"; annotations: AnnotationUpdate[] }
+  | { type: "remove"; ids: string[] };
 
-/** All markers added to the map, keyed by id */
-const markerMap = new Map<string, TrackedMarker>();
-
-/** Get markers as a flat array (for export) */
-function allMarkers(): TrackedMarker[] {
-  return Array.from(markerMap.values());
+/** Tracked annotation with its Cesium entities */
+interface TrackedAnnotation {
+  def: AnnotationDef;
+  /** All Cesium entities owned by this annotation (point, polyline, polygon, label, etc.) */
+  entities: any[];
 }
 
-/** Persist current markers to localStorage */
-function persistMarkers(): void {
-  if (!viewUUID) return;
-  try {
-    const data = allMarkers().map(
-      ({ id, latitude, longitude, label, color }) => ({
-        id,
-        latitude,
-        longitude,
-        label,
-        color,
-      }),
-    );
-    localStorage.setItem(`${viewUUID}:markers`, JSON.stringify(data));
-  } catch (e) {
-    log.warn("Failed to persist markers:", e);
-  }
+/** All annotations on the map, keyed by id */
+const annotationMap = new Map<string, TrackedAnnotation>();
+
+/** Get all annotations as a flat array */
+function allAnnotations(): TrackedAnnotation[] {
+  return Array.from(annotationMap.values());
 }
 
-/** Load persisted markers from localStorage and add them to the map */
-function restorePersistedMarkers(cesiumViewer: any): void {
-  if (!viewUUID) return;
-  try {
-    const stored = localStorage.getItem(`${viewUUID}:markers`);
-    if (!stored) return;
-    const data = JSON.parse(stored) as {
-      id: string;
-      latitude: number;
-      longitude: number;
-      label?: string;
-      color?: string;
-    }[];
-    if (!Array.isArray(data) || data.length === 0) return;
-    for (const m of data) {
-      if (!markerMap.has(m.id)) {
-        addMarker(
-          cesiumViewer,
-          m.id,
-          m.latitude,
-          m.longitude,
-          m.label,
-          m.color,
-        );
-      }
-    }
-    log.info("Restored", data.length, "persisted marker(s)");
-  } catch (e) {
-    log.warn("Failed to restore markers:", e);
-  }
-}
+// =============================================================================
+// Cesium Rendering Helpers
+// =============================================================================
 
 /**
- * Fly camera to a bounding box with animation
+ * Parse a CSS color string to a Cesium Color
  */
-function flyToBoundingBox(
-  cesiumViewer: any,
-  bbox: BoundingBox,
-  duration: number = 2,
-): Promise<void> {
-  return new Promise((resolve) => {
-    const { destination } = calculateDestination(bbox);
-    cesiumViewer.camera.flyTo({
-      destination,
-      orientation: {
-        heading: 0,
-        pitch: Cesium.Math.toRadians(-90),
-        roll: 0,
-      },
-      duration,
-      complete: resolve,
-      cancel: resolve,
-    });
-  });
+function parseCesiumColor(cssColor: string, fallback?: string): any {
+  try {
+    return Cesium.Color.fromCssColorString(cssColor);
+  } catch {
+    try {
+      if (fallback) return Cesium.Color.fromCssColorString(fallback);
+    } catch {
+      /* ignore */
+    }
+    return Cesium.Color.RED;
+  }
 }
 
 /**
@@ -984,152 +919,318 @@ function renderLabelImage(text: string): string {
 }
 
 /**
- * Parse a CSS color string to a Cesium Color
+ * Create a label billboard entity at a given position
  */
-function parseCesiumColor(cssColor: string): any {
-  try {
-    return Cesium.Color.fromCssColorString(cssColor);
-  } catch {
-    return Cesium.Color.RED;
-  }
-}
-
-/**
- * Add a marker/pin entity to the globe and track it
- */
-function addMarker(
+function createLabelEntity(
   cesiumViewer: any,
-  id: string,
-  lat: number,
-  lon: number,
-  label?: string,
-  color?: string,
-): void {
-  const position = Cesium.Cartesian3.fromDegrees(lon, lat);
-  const cesiumColor = parseCesiumColor(color || "red");
-
+  position: any,
+  text: string,
+  verticalOffset: number = -12,
+): any {
   const dpr = window.devicePixelRatio || 1;
-
-  // Point entity (the colored dot)
-  const pointEntity = cesiumViewer.entities.add({
+  return cesiumViewer.entities.add({
     position,
-    point: {
-      pixelSize: 12,
-      color: cesiumColor,
-      outlineColor: Cesium.Color.WHITE,
-      outlineWidth: 2,
+    billboard: {
+      image: renderLabelImage(text),
+      scale: 1 / dpr,
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+      pixelOffset: new Cesium.Cartesian2(0, verticalOffset),
       disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
   });
-
-  // Label entity (separate so it doesn't conflict with point rendering)
-  let labelEntity: any = null;
-  if (label) {
-    labelEntity = cesiumViewer.entities.add({
-      position,
-      billboard: {
-        image: renderLabelImage(label),
-        scale: 1 / dpr,
-        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-        pixelOffset: new Cesium.Cartesian2(0, -12),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
-    });
-  }
-
-  markerMap.set(id, {
-    id,
-    latitude: lat,
-    longitude: lon,
-    label,
-    color,
-    pointEntity,
-    labelEntity,
-  });
-  updateCopyButton();
-  log.info("Added marker", id, "at", lat, lon, label || "");
 }
 
 /**
- * Update an existing marker's properties
+ * Compute the midpoint of a points array (for route label placement)
  */
-function updateMarker(
-  id: string,
-  updates: {
-    latitude?: number;
-    longitude?: number;
-    label?: string;
-    color?: string;
-  },
-): void {
-  const tracked = markerMap.get(id);
-  if (!tracked) {
-    log.warn("updateMarker: unknown id", id);
-    return;
+function midpoint(points: { latitude: number; longitude: number }[]): {
+  latitude: number;
+  longitude: number;
+} {
+  if (points.length === 0) return { latitude: 0, longitude: 0 };
+  const mid = points[Math.floor(points.length / 2)];
+  return { latitude: mid.latitude, longitude: mid.longitude };
+}
+
+/**
+ * Compute the centroid of a points array (for area label placement)
+ */
+function centroid(points: { latitude: number; longitude: number }[]): {
+  latitude: number;
+  longitude: number;
+} {
+  if (points.length === 0) return { latitude: 0, longitude: 0 };
+  let lat = 0,
+    lon = 0;
+  for (const p of points) {
+    lat += p.latitude;
+    lon += p.longitude;
+  }
+  return { latitude: lat / points.length, longitude: lon / points.length };
+}
+
+/**
+ * Convert a points array to a flat Cesium positions array [lon, lat, lon, lat, ...]
+ */
+function pointsToDegreesArray(
+  points: { latitude: number; longitude: number }[],
+): number[] {
+  const arr: number[] = [];
+  for (const p of points) {
+    arr.push(p.longitude, p.latitude);
+  }
+  return arr;
+}
+
+// =============================================================================
+// Annotation CRUD
+// =============================================================================
+
+/**
+ * Add a new annotation to the map
+ */
+function addAnnotation(cesiumViewer: any, def: AnnotationDef): void {
+  // Remove existing annotation with same id (idempotent upsert)
+  if (annotationMap.has(def.id)) {
+    removeAnnotation(cesiumViewer, def.id);
   }
 
-  if (updates.latitude != null || updates.longitude != null) {
-    const lat = updates.latitude ?? tracked.latitude;
-    const lon = updates.longitude ?? tracked.longitude;
-    const pos = Cesium.Cartesian3.fromDegrees(lon, lat);
-    tracked.pointEntity.position = pos;
-    if (tracked.labelEntity) tracked.labelEntity.position = pos;
-    tracked.latitude = lat;
-    tracked.longitude = lon;
-  }
+  const entities: any[] = [];
 
-  if (updates.color != null) {
-    tracked.pointEntity.point.color = parseCesiumColor(updates.color);
-    tracked.color = updates.color;
-  }
+  switch (def.type) {
+    case "marker": {
+      const position = Cesium.Cartesian3.fromDegrees(
+        def.longitude,
+        def.latitude,
+      );
+      const cesiumColor = parseCesiumColor(def.color || "red");
 
-  if (updates.label !== undefined) {
-    const dpr = window.devicePixelRatio || 1;
-    if (updates.label) {
-      if (tracked.labelEntity) {
-        // Update existing label billboard
-        tracked.labelEntity.billboard.image = renderLabelImage(updates.label);
-        tracked.labelEntity.billboard.scale = 1 / dpr;
-      } else {
-        // Create new label entity
-        tracked.labelEntity = viewer!.entities.add({
-          position: tracked.pointEntity.position.getValue(
-            Cesium.JulianDate.now(),
-          ),
-          billboard: {
-            image: renderLabelImage(updates.label),
-            scale: 1 / dpr,
-            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-            pixelOffset: new Cesium.Cartesian2(0, -12),
+      // Point entity (the colored dot)
+      entities.push(
+        cesiumViewer.entities.add({
+          position,
+          point: {
+            pixelSize: 12,
+            color: cesiumColor,
+            outlineColor: Cesium.Color.WHITE,
+            outlineWidth: 2,
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
-        });
+        }),
+      );
+
+      // Label entity (separate so it doesn't conflict with point rendering)
+      if (def.label) {
+        entities.push(createLabelEntity(cesiumViewer, position, def.label));
       }
-    } else if (tracked.labelEntity) {
-      viewer!.entities.remove(tracked.labelEntity);
-      tracked.labelEntity = null;
+      break;
     }
-    tracked.label = updates.label || undefined;
+
+    case "route": {
+      if (def.points.length < 2) {
+        log.warn("Route needs at least 2 points, got", def.points.length);
+        break;
+      }
+      const positions = Cesium.Cartesian3.fromDegreesArray(
+        pointsToDegreesArray(def.points),
+      );
+      const cesiumColor = parseCesiumColor(def.color || "blue");
+
+      // Build material (dashed or solid)
+      const material = def.dashed
+        ? new Cesium.PolylineDashMaterialProperty({
+            color: cesiumColor,
+            dashLength: 16,
+          })
+        : cesiumColor;
+
+      entities.push(
+        cesiumViewer.entities.add({
+          polyline: {
+            positions,
+            width: def.width ?? 3,
+            material,
+            clampToGround: true,
+          },
+        }),
+      );
+
+      if (def.label) {
+        const mid = midpoint(def.points);
+        const labelPos = Cesium.Cartesian3.fromDegrees(
+          mid.longitude,
+          mid.latitude,
+        );
+        entities.push(createLabelEntity(cesiumViewer, labelPos, def.label, 0));
+      }
+      break;
+    }
+
+    case "area": {
+      if (def.points.length < 3) {
+        log.warn("Area needs at least 3 points, got", def.points.length);
+        break;
+      }
+      const positions = Cesium.Cartesian3.fromDegreesArray(
+        pointsToDegreesArray(def.points),
+      );
+      const outlineColor = parseCesiumColor(def.color || "blue");
+      const fillColor = def.fillColor
+        ? parseCesiumColor(def.fillColor)
+        : outlineColor.withAlpha(0.2);
+
+      entities.push(
+        cesiumViewer.entities.add({
+          polygon: {
+            hierarchy: positions,
+            material: fillColor,
+            outline: true,
+            outlineColor,
+            outlineWidth: 2,
+          },
+        }),
+      );
+
+      if (def.label) {
+        const c = centroid(def.points);
+        const labelPos = Cesium.Cartesian3.fromDegrees(c.longitude, c.latitude);
+        entities.push(createLabelEntity(cesiumViewer, labelPos, def.label, 0));
+      }
+      break;
+    }
+
+    case "circle": {
+      const position = Cesium.Cartesian3.fromDegrees(
+        def.longitude,
+        def.latitude,
+      );
+      const outlineColor = parseCesiumColor(def.color || "blue");
+      const fillColor = def.fillColor
+        ? parseCesiumColor(def.fillColor)
+        : outlineColor.withAlpha(0.15);
+
+      entities.push(
+        cesiumViewer.entities.add({
+          position,
+          ellipse: {
+            semiMajorAxis: def.radiusKm * 1000,
+            semiMinorAxis: def.radiusKm * 1000,
+            material: fillColor,
+            outline: true,
+            outlineColor,
+            outlineWidth: 2,
+          },
+        }),
+      );
+
+      if (def.label) {
+        entities.push(createLabelEntity(cesiumViewer, position, def.label, 0));
+      }
+      break;
+    }
   }
 
+  annotationMap.set(def.id, { def, entities });
   updateCopyButton();
-  log.info("Updated marker", id, updates);
+  log.info("Added annotation", def.type, def.id);
 }
 
 /**
- * Remove a marker from the globe
+ * Update an existing annotation by removing and re-adding with merged fields
  */
-function removeMarker(cesiumViewer: any, id: string): void {
-  const tracked = markerMap.get(id);
+function updateAnnotation(cesiumViewer: any, update: AnnotationUpdate): void {
+  const tracked = annotationMap.get(update.id);
   if (!tracked) {
-    log.warn("removeMarker: unknown id", id);
+    log.warn("updateAnnotation: unknown id", update.id);
     return;
   }
-  cesiumViewer.entities.remove(tracked.pointEntity);
-  if (tracked.labelEntity) cesiumViewer.entities.remove(tracked.labelEntity);
-  markerMap.delete(id);
+
+  // Merge update into existing def
+  const merged = { ...tracked.def, ...update } as AnnotationDef;
+
+  // Remove old and re-add with merged def
+  removeAnnotation(cesiumViewer, update.id);
+  addAnnotation(cesiumViewer, merged);
+  log.info("Updated annotation", update.type, update.id);
+}
+
+/**
+ * Remove an annotation from the map
+ */
+function removeAnnotation(cesiumViewer: any, id: string): void {
+  const tracked = annotationMap.get(id);
+  if (!tracked) {
+    log.warn("removeAnnotation: unknown id", id);
+    return;
+  }
+  for (const entity of tracked.entities) {
+    cesiumViewer.entities.remove(entity);
+  }
+  annotationMap.delete(id);
   updateCopyButton();
-  log.info("Removed marker", id);
+  log.info("Removed annotation", id);
+}
+
+// =============================================================================
+// Persistence
+// =============================================================================
+
+/** Persist current annotations to localStorage */
+function persistAnnotations(): void {
+  if (!viewUUID) return;
+  try {
+    const data = allAnnotations().map((t) => t.def);
+    localStorage.setItem(`${viewUUID}:annotations`, JSON.stringify(data));
+  } catch (e) {
+    log.warn("Failed to persist annotations:", e);
+  }
+}
+
+/** Load persisted annotations from localStorage and add them to the map */
+function restorePersistedAnnotations(cesiumViewer: any): void {
+  if (!viewUUID) return;
+  try {
+    const stored = localStorage.getItem(`${viewUUID}:annotations`);
+    if (!stored) return;
+    const data = JSON.parse(stored) as AnnotationDef[];
+    if (!Array.isArray(data) || data.length === 0) return;
+    for (const ann of data) {
+      if (!annotationMap.has(ann.id)) {
+        addAnnotation(cesiumViewer, ann);
+      }
+    }
+    log.info("Restored", data.length, "persisted annotation(s)");
+  } catch (e) {
+    log.warn("Failed to restore annotations:", e);
+  }
+}
+
+// =============================================================================
+// Command Queue Polling
+// =============================================================================
+
+/**
+ * Fly camera to a bounding box with animation
+ */
+function flyToBoundingBox(
+  cesiumViewer: any,
+  bbox: BoundingBox,
+  duration: number = 2,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const { destination } = calculateDestination(bbox);
+    cesiumViewer.camera.flyTo({
+      destination,
+      orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(-90),
+        roll: 0,
+      },
+      duration,
+      complete: resolve,
+      cancel: resolve,
+    });
+  });
 }
 
 /**
@@ -1155,28 +1256,28 @@ async function processCommands(commands: MapCommand[]): Promise<void> {
         }
         break;
       }
-      case "add_markers": {
-        for (const m of cmd.markers) {
-          addMarker(viewer, m.id, m.latitude, m.longitude, m.label, m.color);
+      case "add": {
+        for (const ann of cmd.annotations) {
+          addAnnotation(viewer, ann);
         }
         break;
       }
-      case "update_markers": {
-        for (const m of cmd.markers) {
-          updateMarker(m.id, m);
+      case "update": {
+        for (const ann of cmd.annotations) {
+          updateAnnotation(viewer, ann);
         }
         break;
       }
-      case "remove_markers": {
+      case "remove": {
         for (const id of cmd.ids) {
-          removeMarker(viewer, id);
+          removeAnnotation(viewer, id);
         }
         break;
       }
     }
   }
   // Persist once after the entire batch
-  persistMarkers();
+  persistAnnotations();
 }
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1217,64 +1318,137 @@ function stopPolling(): void {
 }
 
 // =============================================================================
-// Copy / Export Markers
+// Copy / Export Annotations
 // =============================================================================
 
 /**
- * Format markers as a Markdown table
+ * Format annotations as a Markdown table
  */
-function markersToMarkdown(markers: TrackedMarker[]): string {
+function annotationsToMarkdown(annotations: TrackedAnnotation[]): string {
   const lines = [
-    "| # | Label | Latitude | Longitude | Color |",
-    "| --- | --- | --- | --- | --- |",
+    "| # | Type | ID | Label | Details | Color |",
+    "| --- | --- | --- | --- | --- | --- |",
   ];
-  for (let i = 0; i < markers.length; i++) {
-    const m = markers[i];
+  for (let i = 0; i < annotations.length; i++) {
+    const d = annotations[i].def;
+    let details = "";
+    switch (d.type) {
+      case "marker":
+        details = `${d.latitude.toFixed(6)}, ${d.longitude.toFixed(6)}`;
+        break;
+      case "route":
+        details = `${d.points.length} waypoints`;
+        break;
+      case "area":
+        details = `${d.points.length} vertices`;
+        break;
+      case "circle":
+        details = `${d.latitude.toFixed(6)}, ${d.longitude.toFixed(6)} r=${d.radiusKm}km`;
+        break;
+    }
     lines.push(
-      `| ${i + 1} | ${m.label || ""} | ${m.latitude.toFixed(6)} | ${m.longitude.toFixed(6)} | ${m.color || "red"} |`,
+      `| ${i + 1} | ${d.type} | ${d.id} | ${d.label || ""} | ${details} | ${d.color || (d.type === "marker" ? "red" : "blue")} |`,
     );
   }
   return lines.join("\n");
 }
 
 /**
- * Format markers as GeoJSON FeatureCollection
+ * Format annotations as GeoJSON FeatureCollection
  */
-function markersToGeoJSON(markers: TrackedMarker[]): string {
-  const features = markers.map((m, i) => ({
-    type: "Feature" as const,
-    properties: {
-      name: m.label || `Marker ${i + 1}`,
-      "marker-color": m.color || "red",
-    },
-    geometry: {
-      type: "Point" as const,
-      coordinates: [m.longitude, m.latitude],
-    },
-  }));
+function annotationsToGeoJSON(annotations: TrackedAnnotation[]): string {
+  const features = annotations.map((t) => {
+    const d = t.def;
+    const props: Record<string, unknown> = {
+      name: d.label || d.id,
+      annotationType: d.type,
+      color: d.color,
+    };
+
+    switch (d.type) {
+      case "marker":
+        return {
+          type: "Feature" as const,
+          properties: { ...props, "marker-color": d.color || "red" },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [d.longitude, d.latitude],
+          },
+        };
+      case "route":
+        return {
+          type: "Feature" as const,
+          properties: { ...props, width: d.width, dashed: d.dashed },
+          geometry: {
+            type: "LineString" as const,
+            coordinates: d.points.map((p) => [p.longitude, p.latitude]),
+          },
+        };
+      case "area":
+        return {
+          type: "Feature" as const,
+          properties: { ...props, fillColor: d.fillColor },
+          geometry: {
+            type: "Polygon" as const,
+            coordinates: [
+              [
+                ...d.points.map((p) => [p.longitude, p.latitude]),
+                [d.points[0].longitude, d.points[0].latitude], // close ring
+              ],
+            ],
+          },
+        };
+      case "circle":
+        return {
+          type: "Feature" as const,
+          properties: {
+            ...props,
+            radiusKm: d.radiusKm,
+            fillColor: d.fillColor,
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [d.longitude, d.latitude],
+          },
+        };
+    }
+  });
   return JSON.stringify({ type: "FeatureCollection", features }, null, 2);
 }
 
 /**
- * Copy markers to clipboard in multiple formats (Markdown + GeoJSON)
+ * Copy annotations to clipboard in multiple formats (Markdown + GeoJSON)
  */
-async function copyMarkers(): Promise<void> {
-  const markers = allMarkers();
-  if (markers.length === 0) return;
+async function copyAnnotations(): Promise<void> {
+  const annotations = allAnnotations();
+  if (annotations.length === 0) return;
 
-  const md = markersToMarkdown(markers);
-  const geojson = markersToGeoJSON(markers);
+  const md = annotationsToMarkdown(annotations);
+  const geojson = annotationsToGeoJSON(annotations);
   const btn = document.getElementById("copy-btn");
 
   try {
-    // Multi-mime clipboard: text/plain gets Markdown, application/geo+json gets GeoJSON
-    // Browsers only support a subset of MIME types in ClipboardItem, so we use text/plain for
-    // the markdown table and text/html for a code block with GeoJSON
-    const htmlContent = `<table>\n<tr><th>#</th><th>Label</th><th>Lat</th><th>Lon</th><th>Color</th></tr>\n${markers
-      .map(
-        (m, i) =>
-          `<tr><td>${i + 1}</td><td>${m.label || ""}</td><td>${m.latitude.toFixed(6)}</td><td>${m.longitude.toFixed(6)}</td><td>${m.color || "red"}</td></tr>`,
-      )
+    // Multi-mime clipboard: text/plain gets Markdown, text/html gets table + GeoJSON
+    const htmlContent = `<table>\n<tr><th>#</th><th>Type</th><th>ID</th><th>Label</th><th>Details</th><th>Color</th></tr>\n${annotations
+      .map((t, i) => {
+        const d = t.def;
+        let details = "";
+        switch (d.type) {
+          case "marker":
+            details = `${d.latitude.toFixed(6)}, ${d.longitude.toFixed(6)}`;
+            break;
+          case "route":
+            details = `${d.points.length} waypoints`;
+            break;
+          case "area":
+            details = `${d.points.length} vertices`;
+            break;
+          case "circle":
+            details = `${d.latitude.toFixed(6)}, ${d.longitude.toFixed(6)} r=${d.radiusKm}km`;
+            break;
+        }
+        return `<tr><td>${i + 1}</td><td>${d.type}</td><td>${d.id}</td><td>${d.label || ""}</td><td>${details}</td><td>${d.color || (d.type === "marker" ? "red" : "blue")}</td></tr>`;
+      })
       .join(
         "\n",
       )}\n</table>\n<details><summary>GeoJSON</summary><pre><code>${geojson.replace(/</g, "&lt;")}</code></pre></details>`;
@@ -1292,7 +1466,7 @@ async function copyMarkers(): Promise<void> {
       btn.classList.add("copied");
       setTimeout(() => btn.classList.remove("copied"), 1200);
     }
-    log.info(`Copied ${markers.length} marker(s) to clipboard`);
+    log.info(`Copied ${annotations.length} annotation(s) to clipboard`);
   } catch (e) {
     // Fallback: plain text only
     try {
@@ -1304,21 +1478,108 @@ async function copyMarkers(): Promise<void> {
         setTimeout(() => btn.classList.remove("copied"), 1200);
       }
     } catch (e2) {
-      log.error("Failed to copy markers:", e2);
+      log.error("Failed to copy annotations:", e2);
     }
   }
 }
 
 /**
- * Show/hide the copy button based on marker count
+ * Show/hide the copy button based on annotation count
  */
 function updateCopyButton(): void {
   const btn = document.getElementById("copy-btn");
   if (!btn) return;
-  const count = markerMap.size;
+  const count = annotationMap.size;
   btn.style.display = count > 0 ? "flex" : "none";
-  btn.title = `Copy ${count} marker(s) as Markdown + GeoJSON`;
+  btn.title = `Copy ${count} annotation(s) as Markdown + GeoJSON`;
 }
+
+// =============================================================================
+// Tool Input Handlers
+// =============================================================================
+
+// Handle streaming tool input (progressive annotation rendering)
+app.ontoolinputpartial = (params) => {
+  if (!viewer) return;
+  const args = params.arguments as
+    | { annotations?: AnnotationDef[] }
+    | undefined;
+  if (!args?.annotations || args.annotations.length === 0) return;
+
+  // Process all but the last item (which may be truncated from streaming)
+  const safe = args.annotations.slice(0, -1);
+  for (const ann of safe) {
+    if (!ann.id || !ann.type) continue;
+    // Idempotent upsert: addAnnotation already handles existing IDs
+    addAnnotation(viewer, ann);
+  }
+};
+
+// Handle initial tool input (bounding box or center+radius from show-map tool)
+app.ontoolinput = async (params) => {
+  log.info("Received tool input:", params);
+  const args = params.arguments as
+    | {
+        boundingBox?: BoundingBox;
+        west?: number;
+        south?: number;
+        east?: number;
+        north?: number;
+        latitude?: number;
+        longitude?: number;
+        radiusKm?: number;
+        label?: string;
+        annotations?: AnnotationDef[];
+      }
+    | undefined;
+
+  if (args && viewer) {
+    // Resolve bounding box
+    let bbox: BoundingBox | null = null;
+
+    if (args.boundingBox) {
+      bbox = args.boundingBox;
+    } else if (
+      args.west !== undefined &&
+      args.south !== undefined &&
+      args.east !== undefined &&
+      args.north !== undefined
+    ) {
+      bbox = {
+        west: args.west,
+        south: args.south,
+        east: args.east,
+        north: args.north,
+      };
+    } else if (args.latitude !== undefined && args.longitude !== undefined) {
+      bbox = bboxFromCenter(args.latitude, args.longitude, args.radiusKm ?? 50);
+    }
+
+    if (bbox) {
+      hasReceivedToolInput = true;
+      log.info("Positioning camera to bbox:", bbox);
+      setViewToBoundingBox(viewer, bbox);
+      await waitForTilesLoaded(viewer);
+      hideLoading();
+      log.info(
+        "Camera positioned, tiles loaded. Height:",
+        viewer.camera.positionCartographic.height,
+      );
+    }
+
+    // Add initial annotations from tool input
+    if (args.annotations && args.annotations.length > 0) {
+      for (const ann of args.annotations) {
+        addAnnotation(viewer, ann);
+      }
+      log.info(
+        "Added",
+        args.annotations.length,
+        "initial annotation(s) from tool input",
+      );
+    }
+  }
+};
 
 // Handle tool result - extract viewUUID, restore persisted view, start polling
 app.ontoolresult = async (result) => {
@@ -1336,32 +1597,32 @@ app.ontoolresult = async (result) => {
     }
   }
 
-  // Restore persisted markers first, then add any new initial ones
+  // Restore persisted annotations first, then add any new initial ones
   if (viewer && viewUUID) {
-    restorePersistedMarkers(viewer);
+    restorePersistedAnnotations(viewer);
   }
 
-  // Add initial markers from _meta (if any — skips duplicates via markerMap)
-  const initialMarkers = result._meta?.initialMarkers as
-    | (MarkerDef & { id: string })[]
+  // Add initial annotations from _meta (if any — skips duplicates via annotationMap)
+  const initialAnnotations = result._meta?.initialAnnotations as
+    | AnnotationDef[]
     | undefined;
-  if (viewer && initialMarkers && initialMarkers.length > 0) {
-    for (const m of initialMarkers) {
-      if (!markerMap.has(m.id)) {
-        addMarker(viewer, m.id, m.latitude, m.longitude, m.label, m.color);
+  if (viewer && initialAnnotations && initialAnnotations.length > 0) {
+    for (const ann of initialAnnotations) {
+      if (!annotationMap.has(ann.id)) {
+        addAnnotation(viewer, ann);
       }
     }
     log.info(
       "Added",
-      initialMarkers.length,
-      "initial marker(s) from tool result",
+      initialAnnotations.length,
+      "initial annotation(s) from tool result",
     );
   }
 
-  // Ensure all current markers are persisted (initial markers from ontoolinput
-  // were added before viewUUID was set, so persistMarkers() was a no-op then)
-  if (viewUUID && markerMap.size > 0) {
-    persistMarkers();
+  // Ensure all current annotations are persisted (initial annotations from ontoolinput
+  // were added before viewUUID was set, so persistAnnotations() was a no-op then)
+  if (viewUUID && annotationMap.size > 0) {
+    persistAnnotations();
   }
 
   // Start polling for commands now that we have viewUUID
@@ -1413,7 +1674,7 @@ async function initialize() {
     // Set up copy button
     const copyBtn = document.getElementById("copy-btn");
     if (copyBtn) {
-      copyBtn.addEventListener("click", copyMarkers);
+      copyBtn.addEventListener("click", copyAnnotations);
     }
     updateCopyButton();
 

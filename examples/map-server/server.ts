@@ -3,7 +3,8 @@
  *
  * Provides tools for:
  * - geocode: Search for places using OpenStreetMap Nominatim
- * - show-map: Display an interactive 3D globe at a given location
+ * - show-map: Display an interactive 3D globe with annotations (markers, routes, areas, circles)
+ * - interact: Navigate, add/update/remove annotations on an existing map view
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
@@ -28,6 +29,118 @@ const DIST_DIR = import.meta.filename.endsWith(".ts")
 const RESOURCE_URI = "ui://cesium-map/mcp-app.html";
 
 // =============================================================================
+// Annotation Schemas (discriminated union → oneOf in JSON Schema)
+// =============================================================================
+
+const PointCoord = z.object({
+  latitude: z.number().describe("Latitude, -90 to 90"),
+  longitude: z.number().describe("Longitude, -180 to 180"),
+});
+
+const MarkerAnnotation = z.object({
+  type: z.literal("marker"),
+  id: z.string().describe("Unique annotation id (chosen by caller)"),
+  latitude: z.number().describe("Latitude, -90 to 90"),
+  longitude: z.number().describe("Longitude, -180 to 180"),
+  label: z.string().optional().describe("Text label"),
+  color: z.string().optional().describe('CSS color (default "red")'),
+});
+
+const RouteAnnotation = z.object({
+  type: z.literal("route"),
+  id: z.string().describe("Unique annotation id (chosen by caller)"),
+  points: z.array(PointCoord).describe("Ordered waypoints"),
+  label: z.string().optional().describe("Text label (shown at midpoint)"),
+  color: z.string().optional().describe('CSS color (default "blue")'),
+  width: z.number().optional().describe("Line width in px (default 3)"),
+  dashed: z.boolean().optional().describe("Dashed line style"),
+});
+
+const AreaAnnotation = z.object({
+  type: z.literal("area"),
+  id: z.string().describe("Unique annotation id (chosen by caller)"),
+  points: z.array(PointCoord).describe("Polygon vertices (min 3, auto-closed)"),
+  label: z.string().optional().describe("Text label (shown at centroid)"),
+  color: z.string().optional().describe('Outline CSS color (default "blue")'),
+  fillColor: z
+    .string()
+    .optional()
+    .describe('Fill CSS color, e.g. "rgba(255,0,0,0.2)"'),
+});
+
+const CircleAnnotation = z.object({
+  type: z.literal("circle"),
+  id: z.string().describe("Unique annotation id (chosen by caller)"),
+  latitude: z.number().describe("Center latitude"),
+  longitude: z.number().describe("Center longitude"),
+  radiusKm: z.number().describe("Radius in km"),
+  label: z.string().optional().describe("Text label (shown at center)"),
+  color: z.string().optional().describe('Outline CSS color (default "blue")'),
+  fillColor: z.string().optional().describe("Fill CSS color"),
+});
+
+const AnnotationSchema = z.discriminatedUnion("type", [
+  MarkerAnnotation,
+  RouteAnnotation,
+  AreaAnnotation,
+  CircleAnnotation,
+]);
+
+export type AnnotationDef = z.infer<typeof AnnotationSchema>;
+
+// Update schemas: same discriminator, but type-specific fields are optional
+const MarkerAnnotationUpdate = z.object({
+  type: z.literal("marker"),
+  id: z.string().describe("Annotation id to update"),
+  latitude: z.number().optional().describe("New latitude"),
+  longitude: z.number().optional().describe("New longitude"),
+  label: z.string().optional().describe("New label"),
+  color: z.string().optional().describe("New color"),
+});
+
+const RouteAnnotationUpdate = z.object({
+  type: z.literal("route"),
+  id: z.string().describe("Annotation id to update"),
+  points: z.array(PointCoord).optional().describe("Replacement waypoints"),
+  label: z.string().optional().describe("New label"),
+  color: z.string().optional().describe("New color"),
+  width: z.number().optional().describe("New line width"),
+  dashed: z.boolean().optional().describe("New dashed style"),
+});
+
+const AreaAnnotationUpdate = z.object({
+  type: z.literal("area"),
+  id: z.string().describe("Annotation id to update"),
+  points: z
+    .array(PointCoord)
+    .optional()
+    .describe("Replacement polygon vertices"),
+  label: z.string().optional().describe("New label"),
+  color: z.string().optional().describe("New outline color"),
+  fillColor: z.string().optional().describe("New fill color"),
+});
+
+const CircleAnnotationUpdate = z.object({
+  type: z.literal("circle"),
+  id: z.string().describe("Annotation id to update"),
+  latitude: z.number().optional().describe("New center latitude"),
+  longitude: z.number().optional().describe("New center longitude"),
+  radiusKm: z.number().optional().describe("New radius in km"),
+  label: z.string().optional().describe("New label"),
+  color: z.string().optional().describe("New outline color"),
+  fillColor: z.string().optional().describe("New fill color"),
+});
+
+const AnnotationUpdateSchema = z.discriminatedUnion("type", [
+  MarkerAnnotationUpdate,
+  RouteAnnotationUpdate,
+  AreaAnnotationUpdate,
+  CircleAnnotationUpdate,
+]);
+
+export type AnnotationUpdate = z.infer<typeof AnnotationUpdateSchema>;
+
+// =============================================================================
 // Command Queue (shared across stateless server instances)
 // =============================================================================
 
@@ -40,13 +153,6 @@ const SWEEP_INTERVAL_MS = 30_000; // 30 seconds
 /** Fixed batch window: when commands are present, wait this long before returning to let more accumulate */
 const POLL_BATCH_WAIT_MS = 200;
 
-export interface MarkerDef {
-  latitude: number;
-  longitude: number;
-  label?: string;
-  color?: string;
-}
-
 export type MapCommand =
   | {
       type: "navigate";
@@ -58,21 +164,15 @@ export type MapCommand =
       fly?: boolean;
     }
   | {
-      type: "add_markers";
-      markers: (MarkerDef & { id: string })[];
+      type: "add";
+      annotations: AnnotationDef[];
     }
   | {
-      type: "update_markers";
-      markers: {
-        id: string;
-        latitude?: number;
-        longitude?: number;
-        label?: string;
-        color?: string;
-      }[];
+      type: "update";
+      annotations: AnnotationUpdate[];
     }
   | {
-      type: "remove_markers";
+      type: "remove";
       ids: string[];
     };
 
@@ -199,7 +299,7 @@ export function createServer(): McpServer {
           "https://*.cesium.com",
         ],
       },
-      // Clipboard permission for the copy-markers button
+      // Clipboard permission for the copy-annotations button
       permissions: { clipboardWrite: {} },
     },
   };
@@ -236,7 +336,7 @@ export function createServer(): McpServer {
     {
       title: "Show Map",
       description:
-        "Display an interactive world map. Specify the view with either a bounding box (`west`/`south`/`east`/`north`) or a center point (`latitude`/`longitude`) with optional `radiusKm` (default 50). Optionally pass initial `markers` (useful when showing multiple points; skip for a single location as the map already centers there).",
+        "Display an interactive world map. Specify the view with either a bounding box (`west`/`south`/`east`/`north`) or a center point (`latitude`/`longitude`) with optional `radiusKm` (default 50). Optionally pass initial `annotations` (markers, routes, areas, circles). For a single location the map already centers there, so a marker is redundant unless you need a label.",
       inputSchema: {
         west: z
           .number()
@@ -271,21 +371,12 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("Optional label to display on the map"),
-        markers: z
-          .array(
-            z.object({
-              id: z.string().describe("Unique marker id (chosen by caller)"),
-              latitude: z.number().describe("Latitude, -90 to 90"),
-              longitude: z.number().describe("Longitude, -180 to 180"),
-              label: z.string().optional().describe("Marker label"),
-              color: z
-                .string()
-                .optional()
-                .describe('CSS color, e.g. "red", "#ff0000"'),
-            }),
-          )
+        annotations: z
+          .array(AnnotationSchema)
           .optional()
-          .describe("Initial markers to display on the map"),
+          .describe(
+            "Initial annotations: markers, routes, areas, or circles to display on the map",
+          ),
       },
       _meta: { [RESOURCE_URI_META_KEY]: RESOURCE_URI },
     },
@@ -298,7 +389,7 @@ export function createServer(): McpServer {
       longitude,
       radiusKm,
       label,
-      markers,
+      annotations,
     }): Promise<CallToolResult> => {
       const uuid = randomUUID();
 
@@ -322,22 +413,22 @@ export function createServer(): McpServer {
         bbox = { west: -0.5, south: 51.3, east: 0.3, north: 51.7 };
       }
 
-      const initialMarkers = markers ?? [];
-      const markerSummary =
-        initialMarkers.length > 0
-          ? ` with ${initialMarkers.length} marker(s)`
+      const initialAnnotations = annotations ?? [];
+      const annotationSummary =
+        initialAnnotations.length > 0
+          ? ` with ${initialAnnotations.length} annotation(s)`
           : "";
 
       return {
         content: [
           {
             type: "text",
-            text: `Displaying globe (viewUUID: ${uuid}) at: W:${bbox.west.toFixed(4)}, S:${bbox.south.toFixed(4)}, E:${bbox.east.toFixed(4)}, N:${bbox.north.toFixed(4)}${label ? ` (${label})` : ""}${markerSummary}. Use the interact tool with this viewUUID to navigate, add markers, etc.`,
+            text: `Displaying globe (viewUUID: ${uuid}) at: W:${bbox.west.toFixed(4)}, S:${bbox.south.toFixed(4)}, E:${bbox.east.toFixed(4)}, N:${bbox.north.toFixed(4)}${label ? ` (${label})` : ""}${annotationSummary}. Use the interact tool with this viewUUID to navigate, add annotations, etc.`,
           },
         ],
         _meta: {
           viewUUID: uuid,
-          ...(initialMarkers.length > 0 ? { initialMarkers } : {}),
+          ...(initialAnnotations.length > 0 ? { initialAnnotations } : {}),
         },
       };
     },
@@ -352,16 +443,17 @@ export function createServer(): McpServer {
 
 Actions:
 - navigate: Fly/jump to a bounding box. Requires \`west\`, \`south\`, \`east\`, \`north\`. Optional: \`fly\` (default true), \`label\`.
-- add_markers: Add one or more pins. Requires \`markers\` array, each with \`id\` (caller-chosen), \`latitude\`, \`longitude\`, and optional \`label\`, \`color\` (CSS color, default red).
-- update_markers: Update existing markers. Requires \`markers\` array, each with \`id\` and any fields to change (\`latitude\`, \`longitude\`, \`label\`, \`color\`).
-- remove_markers: Remove markers by id. Requires \`ids\` array.`,
+- add: Add annotations (markers, routes, areas, circles). Requires \`annotations\` array.
+- update: Update existing annotations. Requires \`annotations\` array with \`id\` + \`type\` and fields to change.
+- remove: Remove annotations by id. Requires \`ids\` array.`,
       inputSchema: {
         viewUUID: z
           .string()
           .describe("The viewUUID of the map (from show-map result)"),
         action: z
-          .enum(["navigate", "add_markers", "update_markers", "remove_markers"])
+          .enum(["navigate", "add", "update", "remove"])
           .describe("Action to perform"),
+        // navigate fields
         west: z
           .number()
           .optional()
@@ -384,28 +476,23 @@ Actions:
           .default(true)
           .describe("Animate camera flight (for navigate, default true)"),
         label: z.string().optional().describe("Label text (for navigate)"),
-        markers: z
-          .array(
-            z.object({
-              id: z.string().describe("Marker id (chosen by caller)"),
-              latitude: z.number().optional().describe("Latitude, -90 to 90"),
-              longitude: z
-                .number()
-                .optional()
-                .describe("Longitude, -180 to 180"),
-              label: z.string().optional().describe("Marker label"),
-              color: z
-                .string()
-                .optional()
-                .describe('CSS color, e.g. "red", "#ff0000"'),
-            }),
-          )
+        // add annotations
+        annotations: z
+          .array(AnnotationSchema)
           .optional()
-          .describe("Array of markers (for add_markers, update_markers)"),
+          .describe("Annotations to add (for add action)"),
+        // update annotations
+        updates: z
+          .array(AnnotationUpdateSchema)
+          .optional()
+          .describe(
+            "Annotation updates with id + type + changed fields (for update action)",
+          ),
+        // remove annotations
         ids: z
           .array(z.string())
           .optional()
-          .describe("Marker ids to remove (for remove_markers)"),
+          .describe("Annotation ids to remove (for remove action)"),
       },
     },
     async ({
@@ -417,10 +504,10 @@ Actions:
       north,
       fly,
       label,
-      markers,
+      annotations,
+      updates,
       ids,
     }): Promise<CallToolResult> => {
-      let description: string;
       switch (action) {
         case "navigate":
           if (west == null || south == null || east == null || north == null)
@@ -442,75 +529,78 @@ Actions:
             label,
             fly,
           });
-          description = `navigate to W:${west.toFixed(4)}, S:${south.toFixed(4)}, E:${east.toFixed(4)}, N:${north.toFixed(4)}${label ? ` (${label})` : ""}`;
-          return {
-            content: [{ type: "text", text: `Queued: ${description}` }],
-          };
-
-        case "add_markers": {
-          if (!markers || markers.length === 0)
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "add_markers requires a non-empty `markers` array",
-                },
-              ],
-              isError: true,
-            };
-          const addList = markers.map((m) => ({
-            ...m,
-            latitude: m.latitude!,
-            longitude: m.longitude!,
-          }));
-          enqueueCommand(uuid, { type: "add_markers", markers: addList });
           return {
             content: [
               {
                 type: "text",
-                text: `Added ${addList.length} marker(s)`,
+                text: `Queued: navigate to W:${west.toFixed(4)}, S:${south.toFixed(4)}, E:${east.toFixed(4)}, N:${north.toFixed(4)}${label ? ` (${label})` : ""}`,
+              },
+            ],
+          };
+
+        case "add": {
+          if (!annotations || annotations.length === 0)
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "add requires a non-empty `annotations` array",
+                },
+              ],
+              isError: true,
+            };
+          enqueueCommand(uuid, { type: "add", annotations });
+          const types = [...new Set(annotations.map((a) => a.type))].join(", ");
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Added ${annotations.length} annotation(s) (${types})`,
               },
             ],
           };
         }
 
-        case "update_markers": {
-          if (!markers || markers.length === 0)
+        case "update": {
+          if (!updates || updates.length === 0)
             return {
               content: [
                 {
                   type: "text",
-                  text: "update_markers requires a non-empty `markers` array",
+                  text: "update requires a non-empty `updates` array",
                 },
               ],
               isError: true,
             };
-          enqueueCommand(uuid, { type: "update_markers", markers });
+          enqueueCommand(uuid, { type: "update", annotations: updates });
           return {
             content: [
               {
                 type: "text",
-                text: `Queued: update ${markers.length} marker(s)`,
+                text: `Queued: update ${updates.length} annotation(s)`,
               },
             ],
           };
         }
 
-        case "remove_markers":
+        case "remove":
           if (!ids || ids.length === 0)
             return {
               content: [
                 {
                   type: "text",
-                  text: "remove_markers requires a non-empty `ids` array",
+                  text: "remove requires a non-empty `ids` array",
                 },
               ],
               isError: true,
             };
-          enqueueCommand(uuid, { type: "remove_markers", ids });
+          enqueueCommand(uuid, { type: "remove", ids });
           return {
             content: [
-              { type: "text", text: `Queued: remove ${ids.length} marker(s)` },
+              {
+                type: "text",
+                text: `Queued: remove ${ids.length} annotation(s)`,
+              },
             ],
           };
 
