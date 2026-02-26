@@ -416,7 +416,7 @@ body {
   right: 0;
   bottom: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: 3; /* above text-layer (z-index: 2) so notes are clickable */
 }
 
 .annotation-highlight {
@@ -451,12 +451,16 @@ body {
   height: 20px;
   cursor: pointer;
   pointer-events: auto;
-  font-size: 16px;
-  line-height: 20px;
-  text-align: center;
 }
 .annotation-note::after {
-  content: attr(data-icon);
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  margin: 2px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M3 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-4-4H3zm7 1.5L13.5 6H11a1 1 0 0 1-1-1V2.5zM5 8.5h6v1H5v-1zm0 2.5h4v1H5v-1z'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='black'%3E%3Cpath d='M3 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V5l-4-4H3zm7 1.5L13.5 6H11a1 1 0 0 1-1-1V2.5zM5 8.5h6v1H5v-1zm0 2.5h4v1H5v-1z'/%3E%3C/svg%3E") no-repeat center / contain;
 }
 .annotation-note .annotation-tooltip {
   display: none;

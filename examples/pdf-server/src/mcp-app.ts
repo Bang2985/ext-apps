@@ -952,7 +952,6 @@ function renderNoteAnnotation(
   el.className = "annotation-note";
   el.style.left = `${pos.left}px`;
   el.style.top = `${pos.top - 20}px`; // offset up so note icon is at the point
-  el.setAttribute("data-icon", "\uD83D\uDCDD"); // memo emoji
   if (def.color) el.style.color = def.color;
 
   const tooltip = document.createElement("div");
