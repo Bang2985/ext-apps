@@ -7,7 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import express from "express";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import cors from "cors";
@@ -32,7 +32,9 @@ export async function startStreamableHTTPServer(
 ): Promise<void> {
   const port = parseInt(process.env.PORT ?? "3001", 10);
 
-  const app = createMcpExpressApp({ host: "0.0.0.0" });
+  const app = express();
+  // Need a generous body limit: submit_page_data sends base64 PNG screenshots
+  app.use(express.json({ limit: "50mb" }));
   app.use(cors());
 
   app.all("/mcp", async (req: Request, res: Response) => {
