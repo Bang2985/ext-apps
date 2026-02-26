@@ -844,7 +844,7 @@ Accepts:
         content: [
           {
             type: "text",
-            text: `Displaying PDF (viewUUID: ${uuid}): ${normalized}. Use the interact tool with this viewUUID to navigate, search, zoom, etc.`,
+            text: `Displaying PDF (viewUUID: ${uuid}): ${normalized}.\n\nUse the interact tool with this viewUUID to:\n- ANNOTATE: add highlights, underlines, notes, stamps (APPROVED/DRAFT/…), rectangles, freetext, strikethroughs\n- HIGHLIGHT TEXT by search query (highlight_text action)\n- NAVIGATE pages, SEARCH text, ZOOM\n- GET PAGES: extract text and/or screenshots from page ranges (get_pages action)\n- FILL FORM fields\n- DOWNLOAD the annotated PDF\n\nThe viewer supports full annotation capabilities — use add_annotations to mark up the document.`,
           },
         ],
         structuredContent: {
@@ -864,37 +864,44 @@ Accepts:
     "interact",
     {
       title: "Interact with PDF",
-      description: `Send an action to an existing PDF viewer. Actions are queued and batched.
+      description: `Interact with a PDF viewer: annotate, navigate, search, extract pages, fill forms.
 
-Actions:
-- navigate: Go to a page. Requires \`page\`.
-- search: Search text and highlight matches in UI. Requires \`query\`. Results (with excerpts, pages, offsets) appear in model context.
-- find: Search text silently (no UI change). Requires \`query\`. Results appear in model context only.
-- search_navigate: Jump to a search match. Requires \`matchIndex\` (from search/find results).
-- zoom: Set zoom level. Requires \`scale\` (0.5–3.0).
-- add_annotations: Add annotations to the PDF. Requires \`annotations\` array. Each annotation has \`id\` (string), \`type\`, and \`page\` (1-indexed).
-- update_annotations: Partially update existing annotations. Requires \`annotations\` array (id + type required, other fields optional).
-- remove_annotations: Remove annotations by ID. Requires \`ids\` array.
-- highlight_text: Find text and highlight it. Requires \`query\`. Optional \`page\` (defaults to all pages), \`color\`, \`content\` (tooltip).
-- fill_form: Fill form fields. Requires \`fields\` array of { name, value }.
-- get_pages: Get text and/or screenshots from pages without navigating. Uses \`intervals\` (page ranges with optional start/end, e.g. [{start:1,end:5}], [{}] for all). Optional \`getText\` (default true), \`getScreenshots\` (default false). Max 20 pages. Returns page content directly.
+**ANNOTATION** — You can add visual annotations to any page. Use add_annotations with an array of annotation objects.
+Each annotation needs: id (unique string), type, page (1-indexed).
+Coordinates use PDF points (72 dpi), bottom-left origin.
 
-Annotation types (all use PDF points, 72 dpi, bottom-left origin; colors are CSS strings):
-- highlight: \`{id, type:"highlight", page, rects:[{x,y,width,height}], color?, content?}\` — yellow semi-transparent overlay
-- underline: \`{id, type:"underline", page, rects:[{x,y,width,height}], color?}\` — red underline
-- strikethrough: \`{id, type:"strikethrough", page, rects:[{x,y,width,height}], color?}\` — line through text
-- note: \`{id, type:"note", page, x, y, content, color?}\` — sticky note icon with tooltip
-- rectangle: \`{id, type:"rectangle", page, x, y, width, height, color?, fillColor?}\` — box outline/fill
-- freetext: \`{id, type:"freetext", page, x, y, content, fontSize?, color?}\` — text at position
-- stamp: \`{id, type:"stamp", page, x, y, label, color?, rotation?}\` — label is one of: APPROVED, DRAFT, CONFIDENTIAL, FINAL, VOID, REJECTED
+Annotation types:
+• highlight: rects:[{x,y,width,height}], color?, content? — semi-transparent overlay on text regions
+• underline: rects:[{x,y,width,height}], color? — underline below text
+• strikethrough: rects:[{x,y,width,height}], color? — line through text
+• note: x, y, content, color? — sticky note icon with tooltip
+• rectangle: x, y, width, height, color?, fillColor? — outlined/filled box
+• freetext: x, y, content, fontSize?, color? — arbitrary text label
+• stamp: x, y, label (APPROVED|DRAFT|CONFIDENTIAL|FINAL|VOID|REJECTED), color?, rotation? — stamp overlay
 
-Example — add a highlight and a stamp:
+Example — add a highlight and a stamp on page 1:
 \`\`\`json
-{"action":"add_annotations","viewUUID":"...","annotations":[
-  {"id":"h1","type":"highlight","page":1,"rects":[{"x":72,"y":700,"width":200,"height":12}],"color":"rgba(255,255,0,0.5)"},
-  {"id":"s1","type":"stamp","page":1,"x":300,"y":500,"label":"APPROVED","color":"#00aa00","rotation":-15}
+{"action":"add_annotations","viewUUID":"…","annotations":[
+  {"id":"h1","type":"highlight","page":1,"rects":[{"x":72,"y":700,"width":200,"height":12}]},
+  {"id":"s1","type":"stamp","page":1,"x":300,"y":500,"label":"APPROVED","color":"green","rotation":-15}
 ]}
-\`\`\``,
+\`\`\`
+
+**HIGHLIGHT TEXT** — highlight_text: auto-find and highlight text by query. Requires \`query\`. Optional: page, color, content.
+
+**ANNOTATION MANAGEMENT**:
+• update_annotations: partial update (id+type required). • remove_annotations: remove by ids.
+
+**NAVIGATION & SEARCH**:
+• navigate: go to page (requires \`page\`)
+• search: highlight matches in UI (requires \`query\`). Results in model context.
+• find: silent search, no UI change (requires \`query\`). Results in model context.
+• search_navigate: jump to match (requires \`matchIndex\`)
+• zoom: set scale 0.5–3.0 (requires \`scale\`)
+
+**PAGE EXTRACTION** — get_pages: extract text/screenshots from page ranges without navigating. \`intervals\` = [{start?,end?}], e.g. [{}] for all. \`getText\` (default true), \`getScreenshots\` (default false). Max 20 pages.
+
+**FORMS** — fill_form: fill fields with \`fields\` array of {name, value}.`,
       inputSchema: {
         viewUUID: z
           .string()
