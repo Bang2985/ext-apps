@@ -143,7 +143,7 @@ const annotationMap = new Map<string, TrackedAnnotation>();
 const formFieldValues = new Map<string, string | boolean>();
 
 // Selection & interaction state
-let selectedAnnotationId: string | null = null;
+const selectedAnnotationIds = new Set<string>();
 let interactionMode: "resize" | "rotate" = "resize";
 let focusedFieldName: string | null = null;
 
@@ -833,7 +833,7 @@ async function updatePageContext() {
           "\nAnnotations on this page (visible in screenshot):";
         for (const t of onThisPage) {
           const d = t.def;
-          const selected = d.id === selectedAnnotationId ? " (SELECTED)" : "";
+          const selected = selectedAnnotationIds.has(d.id) ? " (SELECTED)" : "";
           if ("rects" in d && d.rects.length > 0) {
             const r = d.rects[0];
             annotationSection += `\n  [${d.id}] ${d.type} at (${r.x},${r.y}) ${r.width}x${r.height}${selected}`;
@@ -846,12 +846,14 @@ async function updatePageContext() {
 
     // Include focused field or selected annotation info
     let focusSection = "";
-    if (selectedAnnotationId) {
-      const tracked = annotationMap.get(selectedAnnotationId);
-      if (tracked) {
-        const d = tracked.def;
-        focusSection = `\nSelected: annotation [${d.id}] (${d.type})`;
-      }
+    if (selectedAnnotationIds.size > 0) {
+      const ids = [...selectedAnnotationIds];
+      const descs = ids.map((selId) => {
+        const tracked = annotationMap.get(selId);
+        if (!tracked) return selId;
+        return `[${selId}] (${tracked.def.type})`;
+      });
+      focusSection = `\nSelected: ${descs.join(", ")}`;
     }
     if (focusedFieldName) {
       const label = getFormFieldLabel(focusedFieldName);
@@ -1009,20 +1011,19 @@ function applyEdit(entry: EditEntry, reverse: boolean): void {
 // Selection
 // =============================================================================
 
-function selectAnnotation(id: string | null): void {
-  const prev = selectedAnnotationId;
-  selectedAnnotationId = id;
-  // Reset interaction mode when selecting a new annotation
-  if (id !== prev) {
-    interactionMode = "resize";
-  }
-
-  // Remove selection visuals from previous
-  if (prev) {
-    const tracked = annotationMap.get(prev);
-    if (tracked) {
-      for (const el of tracked.elements) {
-        el.classList.remove("annotation-selected");
+/**
+ * Select annotation(s). Pass null to deselect all.
+ * If additive is true, toggle the given id without clearing existing selection.
+ */
+function selectAnnotation(id: string | null, additive = false): void {
+  if (!additive) {
+    // Clear all existing selection visuals
+    for (const prevId of selectedAnnotationIds) {
+      const tracked = annotationMap.get(prevId);
+      if (tracked) {
+        for (const el of tracked.elements) {
+          el.classList.remove("annotation-selected");
+        }
       }
     }
     // Remove handles
@@ -1031,17 +1032,36 @@ function selectAnnotation(id: string | null): void {
     )) {
       h.remove();
     }
+    selectedAnnotationIds.clear();
+    interactionMode = "resize";
   }
 
-  // Add selection visuals to new
   if (id) {
-    const tracked = annotationMap.get(id);
+    if (additive && selectedAnnotationIds.has(id)) {
+      // Toggle off
+      selectedAnnotationIds.delete(id);
+      const tracked = annotationMap.get(id);
+      if (tracked) {
+        for (const el of tracked.elements) {
+          el.classList.remove("annotation-selected");
+        }
+      }
+    } else {
+      selectedAnnotationIds.add(id);
+    }
+  }
+
+  // Apply selection visuals + handles on all selected
+  // Only show handles when exactly one annotation is selected
+  for (const selId of selectedAnnotationIds) {
+    const tracked = annotationMap.get(selId);
     if (tracked) {
       for (const el of tracked.elements) {
         el.classList.add("annotation-selected");
       }
-      // Show handles for applicable types
-      showHandles(tracked);
+      if (selectedAnnotationIds.size === 1) {
+        showHandles(tracked);
+      }
     }
   }
 
@@ -1056,7 +1076,10 @@ function syncSidebarSelection(): void {
     ".annotation-card",
   )) {
     const cardId = (card as HTMLElement).dataset.annotationId;
-    card.classList.toggle("selected", cardId === selectedAnnotationId);
+    card.classList.toggle(
+      "selected",
+      !!cardId && selectedAnnotationIds.has(cardId),
+    );
   }
 }
 
@@ -1102,7 +1125,7 @@ function setupAnnotationInteraction(
   el: HTMLElement,
   tracked: TrackedAnnotation,
 ): void {
-  // Click to select
+  // Click to select (Shift+click for additive multi-select)
   el.addEventListener("mousedown", (e) => {
     // Ignore if clicking on a handle
     if (
@@ -1112,10 +1135,10 @@ function setupAnnotationInteraction(
       return;
     }
     e.stopPropagation();
-    selectAnnotation(tracked.def.id);
+    selectAnnotation(tracked.def.id, e.shiftKey);
 
-    // Start drag for draggable types
-    if (DRAGGABLE_TYPES.has(tracked.def.type)) {
+    // Start drag for draggable types (only single-select)
+    if (DRAGGABLE_TYPES.has(tracked.def.type) && !e.shiftKey) {
       startDrag(e, tracked);
     }
   });
@@ -1291,7 +1314,7 @@ function setupResizeHandle(
 }
 
 // =============================================================================
-// Rotate (stamp only)
+// Rotate (stamp, rectangle)
 // =============================================================================
 
 function setupRotateHandle(
@@ -1503,11 +1526,13 @@ function renderAnnotationsForPage(pageNum: number): void {
       annotationLayerEl.appendChild(el);
     }
     // Restore selection state after re-render
-    if (selectedAnnotationId === def.id) {
+    if (selectedAnnotationIds.has(def.id)) {
       for (const el of elements) {
         el.classList.add("annotation-selected");
       }
-      showHandles(tracked);
+      if (selectedAnnotationIds.size === 1) {
+        showHandles(tracked);
+      }
     }
   }
 
@@ -1658,7 +1683,7 @@ function renderStampAnnotation(
   if (def.color) el.style.color = def.color;
   if (def.rotation) {
     el.style.transform = `rotate(${-def.rotation}deg)`;
-    el.style.transformOrigin = "left bottom";
+    el.style.transformOrigin = "center center";
   }
   el.textContent = def.label;
   return el;
@@ -1716,9 +1741,7 @@ function removeAnnotation(id: string, skipUndo = false): void {
   }
   for (const el of tracked.elements) el.remove();
   annotationMap.delete(id);
-  if (selectedAnnotationId === id) {
-    selectedAnnotationId = null;
-  }
+  selectedAnnotationIds.delete(id);
   updateAnnotationsBadge();
   renderAnnotationPanel();
 }
@@ -1786,13 +1809,13 @@ function updateAnnotationsBadge(): void {
   }
   // Show/hide the toolbar button based on whether items exist
   annotationsBtn.style.display = count > 0 ? "" : "none";
-  // Auto-close panel/strip when all items are gone
+  // Auto-close panel when all items are gone
   if (count === 0 && annotationPanelOpen) {
     setAnnotationPanelOpen(false);
   }
 }
 
-/** Human-readable label for an annotation type (used in sidebar/strip). */
+/** Human-readable label for an annotation type (used in sidebar). */
 function getAnnotationLabel(def: PdfAnnotationDef): string {
   switch (def.type) {
     case "highlight":
@@ -1980,7 +2003,7 @@ function createAnnotationCard(tracked: TrackedAnnotation): HTMLElement {
   const def = tracked.def;
   const card = document.createElement("div");
   card.className =
-    "annotation-card" + (selectedAnnotationId === def.id ? " selected" : "");
+    "annotation-card" + (selectedAnnotationIds.has(def.id) ? " selected" : "");
   card.dataset.annotationId = def.id;
 
   const row = document.createElement("div");
@@ -2071,15 +2094,17 @@ function createAnnotationCard(tracked: TrackedAnnotation): HTMLElement {
   // Double-click handler: send message to modify annotation
   card.addEventListener("dblclick", (e) => {
     e.stopPropagation();
+    // Select this annotation + update model context before sending message
+    selectAnnotation(def.id);
     const label = getAnnotationLabel(def);
     const previewText = getAnnotationPreview(def);
-    const desc = previewText ? `${label} "${previewText}"` : label;
+    const desc = previewText ? `${label}: ${previewText}` : label;
     app.sendMessage({
       role: "user",
       content: [
         {
           type: "text",
-          text: `Change this annotation to [describe desired change]: ${desc} (id: ${def.id}, page ${def.page})`,
+          text: `update ${desc}: `,
         },
       ],
     });
@@ -2167,13 +2192,16 @@ function createFormFieldCard(
   // Double-click handler: send message to fill field
   card.addEventListener("dblclick", (e) => {
     e.stopPropagation();
+    // Focus field + update model context before sending message
+    focusedFieldName = name;
+    updatePageContext();
     const fieldLabel = getFormFieldLabel(name);
     app.sendMessage({
       role: "user",
       content: [
         {
           type: "text",
-          text: `Fill this field with [desired value]: "${fieldLabel}" (name="${name}")`,
+          text: `update ${fieldLabel}: `,
         },
       ],
     });
@@ -3333,18 +3361,45 @@ formLayerEl.addEventListener("input", (e) => {
   persistAnnotations();
 });
 
-// Track form field focus to sync model context
+// Track form field focus: deselect annotations + sync model context
 formLayerEl.addEventListener(
   "focusin",
   (e) => {
     const target = e.target as HTMLInputElement | HTMLSelectElement;
     const fieldName = target.name;
     if (!fieldName) return;
+    // Focusing a form field deselects any selected annotations
+    if (selectedAnnotationIds.size > 0) {
+      selectAnnotation(null);
+    }
     focusedFieldName = fieldName;
     updatePageContext();
   },
   true,
 );
+
+// Handle form reset: PDF.js dispatches "resetform" on each field element
+formLayerEl.addEventListener(
+  "resetform",
+  (e) => {
+    const target = e.target as HTMLInputElement | HTMLSelectElement;
+    const fieldName = target?.name;
+    if (fieldName && formFieldValues.has(fieldName)) {
+      formFieldValues.delete(fieldName);
+    }
+    // Debounce the UI update since resetform fires per-element
+    if (!resetFormDebounceTimer) {
+      resetFormDebounceTimer = setTimeout(() => {
+        resetFormDebounceTimer = null;
+        updateAnnotationsBadge();
+        renderAnnotationPanel();
+        persistAnnotations();
+      }, 50);
+    }
+  },
+  true,
+);
+let resetFormDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Clear focused field on blur
 formLayerEl.addEventListener(
@@ -3405,7 +3460,7 @@ canvasContainerEl.addEventListener("mousedown", (e) => {
     e.target === canvasEl ||
     (e.target as HTMLElement).classList?.contains("page-wrapper")
   ) {
-    if (selectedAnnotationId) {
+    if (selectedAnnotationIds.size > 0) {
       selectAnnotation(null);
     }
   }
@@ -3413,8 +3468,11 @@ canvasContainerEl.addEventListener("mousedown", (e) => {
 
 // Keyboard navigation
 document.addEventListener("keydown", (e) => {
-  // Delete/Backspace to delete selected annotation
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedAnnotationId) {
+  // Delete/Backspace to delete selected annotations
+  if (
+    (e.key === "Delete" || e.key === "Backspace") &&
+    selectedAnnotationIds.size > 0
+  ) {
     // Don't delete if user is typing in an input
     if (
       document.activeElement instanceof HTMLInputElement ||
@@ -3424,9 +3482,11 @@ document.addEventListener("keydown", (e) => {
       return;
     }
     e.preventDefault();
-    const id = selectedAnnotationId;
+    const ids = [...selectedAnnotationIds];
     selectAnnotation(null);
-    removeAnnotation(id);
+    for (const id of ids) {
+      removeAnnotation(id);
+    }
     persistAnnotations();
     return;
   }
@@ -3485,7 +3545,7 @@ document.addEventListener("keydown", (e) => {
 
   switch (e.key) {
     case "Escape":
-      if (selectedAnnotationId) {
+      if (selectedAnnotationIds.size > 0) {
         selectAnnotation(null);
         e.preventDefault();
       } else if (searchOpen) {
