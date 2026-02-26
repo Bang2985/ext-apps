@@ -1056,7 +1056,10 @@ IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3
 
 **ANNOTATION** — You can add visual annotations to any page. Use add_annotations with an array of annotation objects.
 Each annotation needs: id (unique string), type, page (1-indexed).
-Coordinates use PDF points (72 dpi), bottom-left origin.
+
+**COORDINATE SYSTEM**: PDF points (72 dpi), origin at BOTTOM-LEFT of the page.
+Y increases UPWARD: y=0 is the bottom edge, y=792 is the top edge (for US Letter).
+A typical US Letter page is 612×792 points. To place something near the top, use y≈750. To place near the bottom, use y≈50.
 
 Annotation types:
 • highlight: rects:[{x,y,width,height}], color?, content? — semi-transparent overlay on text regions
@@ -1067,11 +1070,11 @@ Annotation types:
 • freetext: x, y, content, fontSize?, color? — arbitrary text label
 • stamp: x, y, label (APPROVED|DRAFT|CONFIDENTIAL|FINAL|VOID|REJECTED), color?, rotation? — stamp overlay
 
-Example — add a highlight and a stamp on page 1:
+Example — highlight near page top (y=700 = near top) and stamp in middle (y=400):
 \`\`\`json
 {"action":"add_annotations","viewUUID":"…","annotations":[
   {"id":"h1","type":"highlight","page":1,"rects":[{"x":72,"y":700,"width":200,"height":12}]},
-  {"id":"s1","type":"stamp","page":1,"x":300,"y":500,"label":"APPROVED","color":"green","rotation":-15}
+  {"id":"s1","type":"stamp","page":1,"x":300,"y":400,"label":"APPROVED","color":"green","rotation":-15}
 ]}
 \`\`\`
 
