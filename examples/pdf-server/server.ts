@@ -921,7 +921,13 @@ export function createServer(): McpServer {
     "display_pdf",
     {
       title: "Display PDF",
-      description: `Display an interactive PDF viewer with form filling support.
+      description: `Display an interactive PDF viewer for reading, annotating, and filling out PDF documents.
+
+Use this tool when the user wants to:
+- View or read a PDF document
+- Fill out a PDF form (e.g. tax forms, applications, contracts)
+- Annotate a PDF (highlight, underline, add notes, stamps, etc.)
+- Review or interact with a PDF document
 
 Accepts:
 - Local files explicitly added to the server (use list_pdfs to see available files)
