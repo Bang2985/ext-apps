@@ -1107,6 +1107,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       return {
         content: contentParts,
         structuredContent: {
+          viewUUID: uuid,
           url: normalized,
           initialPage: page,
           totalBytes,
