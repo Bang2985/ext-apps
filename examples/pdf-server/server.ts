@@ -942,31 +942,10 @@ Example — add a highlight and a stamp on page 1:
           .optional()
           .describe("Zoom scale, 1.0 = 100% (for zoom)"),
         annotations: z
-          .array(
-            z.union([
-              HighlightAnnotation,
-              UnderlineAnnotation,
-              StrikethroughAnnotation,
-              NoteAnnotation,
-              RectangleAnnotation,
-              FreetextAnnotation,
-              StampAnnotation,
-              // Partial forms for update_annotations (id + type required)
-              HighlightAnnotation.partial().required({ id: true, type: true }),
-              UnderlineAnnotation.partial().required({ id: true, type: true }),
-              StrikethroughAnnotation.partial().required({
-                id: true,
-                type: true,
-              }),
-              NoteAnnotation.partial().required({ id: true, type: true }),
-              RectangleAnnotation.partial().required({ id: true, type: true }),
-              FreetextAnnotation.partial().required({ id: true, type: true }),
-              StampAnnotation.partial().required({ id: true, type: true }),
-            ]),
-          )
+          .array(z.record(z.string(), z.any()))
           .optional()
           .describe(
-            "Annotation objects for add_annotations (full) or update_annotations (partial, id+type required).",
+            "Annotation objects (see types in description). Each needs: id, type, page. For update_annotations only id+type are required.",
           ),
         ids: z
           .array(z.string())
