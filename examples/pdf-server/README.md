@@ -156,11 +156,92 @@ bun examples/pdf-server/main.ts --stdio ./papers/
 
 ## Tools
 
-| Tool             | Visibility | Purpose                                |
-| ---------------- | ---------- | -------------------------------------- |
-| `list_pdfs`      | Model      | List available local files and origins |
-| `display_pdf`    | Model + UI | Display interactive viewer             |
-| `read_pdf_bytes` | App only   | Stream PDF data in chunks              |
+| Tool             | Visibility | Purpose                                               |
+| ---------------- | ---------- | ----------------------------------------------------- |
+| `list_pdfs`      | Model      | List available local files and origins                |
+| `display_pdf`    | Model + UI | Display interactive viewer                            |
+| `interact`       | Model      | Navigate, annotate, search, extract pages, fill forms |
+| `read_pdf_bytes` | App only   | Stream PDF data in chunks                             |
+
+## Example Prompts
+
+After the model calls `display_pdf`, it receives the `viewUUID` and a description of all capabilities. Here are example prompts and follow-ups that exercise annotation features:
+
+### Annotating
+
+> **User:** Show me the Attention Is All You Need paper
+>
+> _Model calls `display_pdf` → viewer opens_
+>
+> **User:** Highlight the title and add an APPROVED stamp on the first page.
+>
+> _Model calls `interact` with `highlight_text` for the title and `add_annotations` with a stamp_
+
+> **User:** Can you annotate this PDF? Mark important sections for me.
+>
+> _Model calls `interact` with `get_pages` to read content first, then `add_annotations` with highlights/notes_
+
+> **User:** Add a note on page 1 saying "Key contribution" at position (200, 500), and highlight the abstract.
+>
+> _Model calls `interact` with `add_annotations` containing a `note` and either `highlight_text` or a `highlight` annotation_
+
+### Navigation & Search
+
+> **User:** Search for "self-attention" in the paper.
+>
+> _Model calls `interact` with action `search`, query `"self-attention"`_
+
+> **User:** Go to page 5.
+>
+> _Model calls `interact` with action `navigate`, page `5`_
+
+### Page Extraction
+
+> **User:** Give me the text of pages 1–3.
+>
+> _Model calls `interact` with action `get_pages`, intervals `[{start:1, end:3}]`, getText `true`_
+
+> **User:** Take a screenshot of the first page.
+>
+> _Model calls `interact` with action `get_pages`, intervals `[{start:1, end:1}]`, getScreenshots `true`_
+
+### Stamps & Form Filling
+
+> **User:** Stamp this document as CONFIDENTIAL on every page.
+>
+> _Model calls `interact` with `add_annotations` containing `stamp` annotations on each page_
+
+> **User:** Fill in the "Name" field with "Alice" and "Date" with "2026-02-26".
+>
+> _Model calls `interact` with action `fill_form`, fields `[{name:"Name", value:"Alice"}, {name:"Date", value:"2026-02-26"}]`_
+
+## Testing
+
+### E2E Tests (Playwright)
+
+```bash
+# Run annotation E2E tests (renders annotations in a real browser)
+npx playwright test tests/e2e/pdf-annotations.spec.ts
+
+# Run all PDF server tests
+npx playwright test -g "PDF Server"
+```
+
+### API Prompt Discovery Tests
+
+These tests verify that Claude can discover and use annotation capabilities by calling the Anthropic Messages API with the tool schemas. They are **disabled by default** — skipped unless `ANTHROPIC_API_KEY` is set:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... npx playwright test tests/e2e/pdf-annotations-api.spec.ts
+```
+
+The API tests simulate a conversation where `display_pdf` has already been called, then send a follow-up user message and verify the model uses annotation actions (or at least the `interact` tool). Three scenarios are tested:
+
+| Scenario             | User prompt                                                       | Expected model behavior                    |
+| -------------------- | ----------------------------------------------------------------- | ------------------------------------------ |
+| Direct annotation    | "Highlight the title and add an APPROVED stamp"                   | Uses `highlight_text` or `add_annotations` |
+| Capability discovery | "Can you annotate this PDF?"                                      | Uses interact or mentions annotations      |
+| Specific notes       | "Add a note saying 'Key contribution' and highlight the abstract" | Uses `interact` tool                       |
 
 ## Architecture
 
@@ -182,8 +263,12 @@ src/
 | External links    | `app.openLink()`                            |
 | View persistence  | `viewUUID` + localStorage                   |
 | Theming           | `applyDocumentTheme()` + CSS `light-dark()` |
+| Annotations       | DOM overlays + pdf-lib embed on download    |
+| Command queue     | Server enqueues → client polls + processes  |
+| File download     | `app.downloadFile()` for annotated PDF      |
 
 ## Dependencies
 
 - `pdfjs-dist`: PDF rendering (frontend only)
+- `pdf-lib`: Client-side PDF modification for annotated download
 - `@modelcontextprotocol/ext-apps`: MCP Apps SDK
