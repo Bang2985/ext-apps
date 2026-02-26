@@ -556,6 +556,7 @@ body {
   z-index: 4; /* above annotation-layer (z-index: 3) so form inputs are clickable */
 }
 
+
 /* Highlight Layer */
 .highlight-layer {
   position: absolute;

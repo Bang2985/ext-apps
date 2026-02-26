@@ -2147,6 +2147,21 @@ async function renderPage() {
           linkService,
           annotationStorage: pdfDocument.annotationStorage,
         } as any);
+
+        // Fix listbox font sizes: the default AnnotationLayer CSS uses
+        // a fixed 9px * scale-factor which can overflow when many options
+        // share a small PDF rect. Shrink font to fit.
+        for (const sel of formLayerEl.querySelectorAll<HTMLSelectElement>(
+          "select[size]",
+        )) {
+          const size = sel.size || sel.options.length;
+          if (size > 1) {
+            const maxFontPx = sel.clientHeight / size - 2; // 2px for padding
+            if (maxFontPx > 0) {
+              sel.style.fontSize = `${maxFontPx}px`;
+            }
+          }
+        }
       }
     } catch (formErr) {
       log.info("Form layer render skipped:", formErr);
