@@ -147,6 +147,8 @@ const fieldNameToIds = new Map<string, string[]>();
 const fieldNameToPage = new Map<string, number>();
 // PDF.js form field name → human-readable label (from PDF TU / alternativeText)
 const fieldNameToLabel = new Map<string, string>();
+// PDF.js form field name → intrinsic order index (page, then top-to-bottom Y position)
+const fieldNameToOrder = new Map<string, number>();
 // Cached result of doc.getFieldObjects() — needed for AnnotationLayer reset button support
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let cachedFieldObjects: Record<string, any[]> | null = null;
@@ -1463,30 +1465,22 @@ function buildStripItems(): StripItem[] {
     }
   }
 
-  // Form fields grouped by page
-  const formByPage = new Map<number, Array<[string, string | boolean]>>();
-  for (const [name, value] of formFieldValues) {
-    const page = fieldNameToPage.get(name) ?? 1;
-    if (!formByPage.has(page)) formByPage.set(page, []);
-    formByPage.get(page)!.push([name, value]);
-  }
-  const formPages = [...formByPage.keys()].sort((a, b) => a - b);
-  for (const pageNum of formPages) {
-    for (const [name, value] of formByPage.get(pageNum)!) {
-      items.push({
-        kind: "formField",
-        page: pageNum,
-        id: name,
-        label: getFormFieldLabel(name),
-        preview:
-          typeof value === "boolean"
-            ? value
-              ? "checked"
-              : "unchecked"
-            : value,
-        color: "#4a90d9",
-      });
-    }
+  // Form fields sorted by intrinsic PDF order (page, then top-to-bottom)
+  const formEntries = [...formFieldValues.entries()].sort((a, b) => {
+    const oa = fieldNameToOrder.get(a[0]) ?? Infinity;
+    const ob = fieldNameToOrder.get(b[0]) ?? Infinity;
+    return oa - ob;
+  });
+  for (const [name, value] of formEntries) {
+    items.push({
+      kind: "formField",
+      page: fieldNameToPage.get(name) ?? 1,
+      id: name,
+      label: getFormFieldLabel(name),
+      preview:
+        typeof value === "boolean" ? (value ? "checked" : "unchecked") : value,
+      color: "#4a90d9",
+    });
   }
 
   return items;
@@ -2271,6 +2265,7 @@ async function buildFieldNameMap(
   fieldNameToIds.clear();
   fieldNameToPage.clear();
   fieldNameToLabel.clear();
+  fieldNameToOrder.clear();
   cachedFieldObjects = null;
   try {
     const fieldObjects = await doc.getFieldObjects();
@@ -2303,7 +2298,10 @@ async function buildFieldNameMap(
       for (let i = 1; i <= doc.numPages; i++) pagesToScan.add(i);
     }
     try {
-      for (const pageNum of pagesToScan) {
+      // Collect field positions for ordering: sort by page, then top-to-bottom (descending Y)
+      const fieldPositions: Array<{ name: string; page: number; y: number }> =
+        [];
+      for (const pageNum of [...pagesToScan].sort((a, b) => a - b)) {
         const page = await doc.getPage(pageNum);
         const annotations = await page.getAnnotations();
         for (const ann of annotations) {
@@ -2312,6 +2310,23 @@ async function buildFieldNameMap(
           if (a.fieldName && a.alternativeText) {
             fieldNameToLabel.set(a.fieldName, a.alternativeText);
           }
+          if (a.fieldName && a.rect) {
+            fieldPositions.push({
+              name: a.fieldName,
+              page: pageNum,
+              y: a.rect[3], // top Y in PDF coords
+            });
+          }
+        }
+      }
+      // Sort by page ascending, then Y descending (top-to-bottom on page)
+      fieldPositions.sort((a, b) => a.page - b.page || b.y - a.y);
+      const seen = new Set<string>();
+      let idx = 0;
+      for (const fp of fieldPositions) {
+        if (!seen.has(fp.name)) {
+          seen.add(fp.name);
+          fieldNameToOrder.set(fp.name, idx++);
         }
       }
     } catch {
