@@ -145,6 +145,8 @@ const formFieldValues = new Map<string, string | boolean>();
 const fieldNameToIds = new Map<string, string[]>();
 // PDF.js form field name → page number mapping (for strip counter)
 const fieldNameToPage = new Map<string, number>();
+// PDF.js form field name → human-readable label (from PDF TU / alternativeText)
+const fieldNameToLabel = new Map<string, string>();
 
 // DOM Elements
 const mainEl = document.querySelector(".main") as HTMLElement;
@@ -1234,6 +1236,19 @@ function getAnnotationColor(def: PdfAnnotationDef): string {
   }
 }
 
+/** Return a human-readable label for a form field name. */
+function getFormFieldLabel(name: string): string {
+  // Prefer the PDF's TU (alternativeText) if available
+  const alt = fieldNameToLabel.get(name);
+  if (alt) return alt;
+  // If the name looks mechanical (contains brackets, dots, or is all-caps with underscores),
+  // just show "Field" as a generic fallback
+  if (/[[\]().]/.test(name) || /^[A-Z0-9_]+$/.test(name)) {
+    return "Field";
+  }
+  return name;
+}
+
 function getAnnotationY(def: PdfAnnotationDef): number {
   if ("y" in def && typeof def.y === "number") return def.y;
   if ("rects" in def && def.rects.length > 0) return def.rects[0].y;
@@ -1284,7 +1299,7 @@ function buildStripItems(): StripItem[] {
         kind: "formField",
         page: pageNum,
         id: name,
-        label: name,
+        label: getFormFieldLabel(name),
         preview:
           typeof value === "boolean"
             ? value
@@ -1485,18 +1500,22 @@ function renderAnnotationPanel(): void {
       swatch.style.background = "#4a90d9";
       row.appendChild(swatch);
 
-      // Field name
+      // Field label
+      const label = getFormFieldLabel(name);
       const nameEl = document.createElement("span");
       nameEl.className = "annotation-card-type";
-      nameEl.textContent = name;
+      nameEl.textContent = label;
       row.appendChild(nameEl);
 
       // Field value preview
-      const valueEl = document.createElement("span");
-      valueEl.className = "annotation-card-preview";
-      valueEl.textContent =
+      const displayValue =
         typeof value === "boolean" ? (value ? "checked" : "unchecked") : value;
-      row.appendChild(valueEl);
+      if (displayValue) {
+        const valueEl = document.createElement("span");
+        valueEl.className = "annotation-card-preview";
+        valueEl.textContent = displayValue;
+        row.appendChild(valueEl);
+      }
 
       // Delete button
       const deleteBtn = document.createElement("button");
@@ -1586,6 +1605,50 @@ function initAnnotationPanel(): void {
   } catch {
     /* ignore */
   }
+
+  // Restore saved panel width
+  try {
+    const savedWidth = localStorage.getItem("pdf-annotation-panel-width");
+    if (savedWidth) {
+      const w = parseInt(savedWidth, 10);
+      if (w >= 150) {
+        annotationsPanelEl.style.width = `${w}px`;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // Resize handle
+  const resizeHandle = document.getElementById("annotation-panel-resize")!;
+  resizeHandle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    resizeHandle.classList.add("dragging");
+    const startX = e.clientX;
+    const startWidth = annotationsPanelEl.offsetWidth;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      // Panel is on the right, so dragging left increases width
+      const newWidth = Math.max(150, startWidth + (startX - ev.clientX));
+      annotationsPanelEl.style.width = `${newWidth}px`;
+    };
+    const onMouseUp = () => {
+      resizeHandle.classList.remove("dragging");
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      try {
+        localStorage.setItem(
+          "pdf-annotation-panel-width",
+          String(annotationsPanelEl.offsetWidth),
+        );
+      } catch {
+        /* ignore */
+      }
+      requestFitToContent();
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
 
   // Toggle button
   annotationsBtn.addEventListener("click", toggleAnnotationPanel);
@@ -2012,6 +2075,7 @@ async function buildFieldNameMap(
 ): Promise<void> {
   fieldNameToIds.clear();
   fieldNameToPage.clear();
+  fieldNameToLabel.clear();
   try {
     const fieldObjects = await doc.getFieldObjects();
     if (fieldObjects) {
@@ -2022,10 +2086,14 @@ async function buildFieldNameMap(
           name,
           fieldArr.map((f) => f.id),
         );
-        // Store page number (0-based in PDF.js field objects → 1-based for us)
         const firstField = fieldArr[0];
+        // Store page number (0-based in PDF.js field objects → 1-based for us)
         if (firstField && typeof firstField.page === "number") {
           fieldNameToPage.set(name, firstField.page + 1);
+        }
+        // Store human-readable label from PDF TU field
+        if (firstField?.alternativeText) {
+          fieldNameToLabel.set(name, firstField.alternativeText);
         }
       }
     }
