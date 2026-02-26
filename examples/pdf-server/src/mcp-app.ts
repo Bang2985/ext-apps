@@ -1359,21 +1359,38 @@ function updateAnnotationsBadge(): void {
   }
 }
 
+/** Human-readable label for an annotation type (used in sidebar/strip). */
+function getAnnotationLabel(def: PdfAnnotationDef): string {
+  switch (def.type) {
+    case "highlight":
+      return def.content ? "Highlight" : "Highlight";
+    case "underline":
+      return "Underline";
+    case "strikethrough":
+      return "Strikethrough";
+    case "note":
+      return "Note";
+    case "freetext":
+      return "Text";
+    case "rectangle":
+      return "Rectangle";
+    case "stamp":
+      return `Stamp: ${def.label}`;
+  }
+}
+
+/** Preview text for an annotation (shown after the label). */
 function getAnnotationPreview(def: PdfAnnotationDef): string {
   switch (def.type) {
     case "note":
     case "freetext":
       return def.content || "";
     case "highlight":
-      return def.content || "Highlight";
-    case "underline":
-      return "Underline";
-    case "strikethrough":
-      return "Strikethrough";
-    case "rectangle":
-      return "Rectangle";
+      return def.content || "";
     case "stamp":
-      return def.label;
+      return "";
+    default:
+      return "";
   }
 }
 
@@ -1439,7 +1456,7 @@ function buildStripItems(): StripItem[] {
         kind: "annotation",
         page: pageNum,
         id: tracked.def.id,
-        label: tracked.def.type,
+        label: getAnnotationLabel(tracked.def),
         preview: getAnnotationPreview(tracked.def),
         color: getAnnotationColor(tracked.def),
       });
@@ -1581,7 +1598,7 @@ function renderAnnotationPanel(): void {
       // Type label
       const typeLabel = document.createElement("span");
       typeLabel.className = "annotation-card-type";
-      typeLabel.textContent = def.type;
+      typeLabel.textContent = getAnnotationLabel(def);
       row.appendChild(typeLabel);
 
       // Preview text
