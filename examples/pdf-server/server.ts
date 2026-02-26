@@ -25,14 +25,8 @@ import {
   type CallToolResult,
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
-import {
-  PDFDocument as PdfLibDocument,
-  PDFTextField as PdfLibTextField,
-  PDFCheckBox as PdfLibCheckBox,
-  PDFDropdown as PdfLibDropdown,
-  PDFRadioGroup as PdfLibRadioGroup,
-  PDFOptionList as PdfLibOptionList,
-} from "pdf-lib";
+// Use the legacy build to avoid DOMMatrix dependency in Node.js
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type {
   PrimitiveSchemaDefinition,
   ElicitResult,
@@ -695,6 +689,15 @@ async function refreshRoots(server: Server): Promise<void> {
  * Extract form fields from a PDF and build an elicitation schema.
  * Returns null if the PDF has no form fields.
  */
+/** Shape of field objects returned by pdfjs-dist's getFieldObjects(). */
+interface PdfJsFieldObject {
+  type: string;
+  name: string;
+  editable: boolean;
+  exportValues?: string;
+  items?: Array<{ exportValue: string; displayValue: string }>;
+}
+
 async function extractFormSchema(
   url: string,
   readRange: (
@@ -711,58 +714,60 @@ async function extractFormSchema(
   const { totalBytes } = await readRange(url, 0, 1);
   const { data } = await readRange(url, 0, totalBytes);
 
-  const pdfDoc = await PdfLibDocument.load(data, {
-    ignoreEncryption: true,
-  });
+  const loadingTask = getDocument({ data });
+  const pdfDoc = await loadingTask.promise;
 
-  let fields;
+  let fieldObjects: Record<string, PdfJsFieldObject[]> | null;
   try {
-    fields = pdfDoc.getForm().getFields();
+    fieldObjects = (await pdfDoc.getFieldObjects()) as Record<
+      string,
+      PdfJsFieldObject[]
+    > | null;
   } catch {
+    pdfDoc.destroy();
     return null;
   }
-  if (fields.length === 0) return null;
-
-  const properties: Record<string, PrimitiveSchemaDefinition> = {};
-  for (const field of fields) {
-    if (field.isReadOnly()) continue;
-    const name = field.getName();
-    if (field instanceof PdfLibCheckBox) {
-      properties[name] = { type: "boolean", title: name };
-    } else if (
-      field instanceof PdfLibDropdown ||
-      field instanceof PdfLibRadioGroup
-    ) {
-      const options =
-        field instanceof PdfLibDropdown
-          ? field.getOptions()
-          : field.getOptions();
-      if (options.length > 0) {
-        properties[name] = {
-          type: "string",
-          title: name,
-          enum: options,
-        };
-      } else {
-        properties[name] = { type: "string", title: name };
-      }
-    } else if (field instanceof PdfLibOptionList) {
-      const options = field.getOptions();
-      if (options.length > 0) {
-        properties[name] = {
-          type: "string",
-          title: name,
-          enum: options,
-        };
-      } else {
-        properties[name] = { type: "string", title: name };
-      }
-    } else if (field instanceof PdfLibTextField) {
-      properties[name] = { type: "string", title: name };
-    }
-    // Skip buttons, signatures, and unknown field types
+  if (!fieldObjects || Object.keys(fieldObjects).length === 0) {
+    pdfDoc.destroy();
+    return null;
   }
 
+  const properties: Record<string, PrimitiveSchemaDefinition> = {};
+  for (const [name, fields] of Object.entries(fieldObjects)) {
+    const field = fields[0]; // first widget determines the type
+    if (!field.editable) continue;
+
+    switch (field.type) {
+      case "text":
+        properties[name] = { type: "string", title: name };
+        break;
+      case "checkbox":
+        properties[name] = { type: "boolean", title: name };
+        break;
+      case "radiobutton": {
+        const options = fields
+          .map((f) => f.exportValues)
+          .filter((v): v is string => !!v && v !== "Off");
+        properties[name] =
+          options.length > 0
+            ? { type: "string", title: name, enum: options }
+            : { type: "string", title: name };
+        break;
+      }
+      case "combobox":
+      case "listbox": {
+        const items = field.items?.map((i) => i.exportValue).filter(Boolean);
+        properties[name] =
+          items && items.length > 0
+            ? { type: "string", title: name, enum: items }
+            : { type: "string", title: name };
+        break;
+      }
+      // Skip "button" (push buttons) and unknown types
+    }
+  }
+
+  pdfDoc.destroy();
   if (Object.keys(properties).length === 0) return null;
 
   return { type: "object", properties };
