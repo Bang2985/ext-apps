@@ -272,6 +272,7 @@ export function createServer(): McpServer {
         markers: z
           .array(
             z.object({
+              id: z.string().describe("Unique marker id (chosen by caller)"),
               latitude: z.number().describe("Latitude, -90 to 90"),
               longitude: z.number().describe("Longitude, -180 to 180"),
               label: z.string().optional().describe("Marker label"),
@@ -319,16 +320,10 @@ export function createServer(): McpServer {
         bbox = { west: -0.5, south: 51.3, east: 0.3, north: 51.7 };
       }
 
-      // Assign IDs to initial markers (so they can be updated/removed later)
-      const initialMarkers = (markers ?? []).map((m) => ({
-        ...m,
-        id: randomUUID(),
-      }));
-
-      const markerIds = initialMarkers.map((m) => m.id);
+      const initialMarkers = markers ?? [];
       const markerSummary =
         initialMarkers.length > 0
-          ? ` with ${initialMarkers.length} marker(s) (ids: ${markerIds.join(", ")})`
+          ? ` with ${initialMarkers.length} marker(s)`
           : "";
 
       return {
@@ -355,7 +350,7 @@ export function createServer(): McpServer {
 
 Actions:
 - navigate: Fly/jump to a bounding box. Requires \`west\`, \`south\`, \`east\`, \`north\`. Optional: \`fly\` (default true), \`label\`.
-- add_markers: Add one or more pins. Requires \`markers\` array, each with \`latitude\`, \`longitude\`, and optional \`label\`, \`color\` (CSS color, default red). Returns the assigned marker \`ids\`.
+- add_markers: Add one or more pins. Requires \`markers\` array, each with \`id\` (caller-chosen), \`latitude\`, \`longitude\`, and optional \`label\`, \`color\` (CSS color, default red).
 - update_markers: Update existing markers. Requires \`markers\` array, each with \`id\` and any fields to change (\`latitude\`, \`longitude\`, \`label\`, \`color\`).
 - remove_markers: Remove markers by id. Requires \`ids\` array.`,
       inputSchema: {
@@ -390,10 +385,7 @@ Actions:
         markers: z
           .array(
             z.object({
-              id: z
-                .string()
-                .optional()
-                .describe("Marker id (required for update_markers)"),
+              id: z.string().describe("Marker id (chosen by caller)"),
               latitude: z.number().optional().describe("Latitude, -90 to 90"),
               longitude: z
                 .number()
@@ -464,19 +456,17 @@ Actions:
               ],
               isError: true,
             };
-          // Assign UUIDs to each marker
-          const withIds = markers.map((m) => ({
+          const addList = markers.map((m) => ({
             ...m,
-            id: m.id || randomUUID(),
+            id: m.id,
             latitude: m.latitude!,
             longitude: m.longitude!,
           }));
-          enqueueCommand(uuid, { type: "add_markers", markers: withIds });
-          const idList = withIds.map((m) => m.id);
+          enqueueCommand(uuid, { type: "add_markers", markers: addList });
           description =
-            withIds.length === 1
-              ? `marker ${idList[0]} at ${withIds[0].latitude.toFixed(4)}, ${withIds[0].longitude.toFixed(4)}${withIds[0].label ? ` (${withIds[0].label})` : ""}`
-              : `${withIds.length} markers (ids: ${idList.join(", ")})`;
+            addList.length === 1
+              ? `marker "${addList[0].id}" at ${addList[0].latitude.toFixed(4)}, ${addList[0].longitude.toFixed(4)}${addList[0].label ? ` (${addList[0].label})` : ""}`
+              : `${addList.length} markers`;
           return {
             content: [{ type: "text", text: `Added: ${description}` }],
           };
@@ -488,37 +478,17 @@ Actions:
               content: [
                 {
                   type: "text",
-                  text: "update_markers requires a non-empty `markers` array with `id` on each entry",
+                  text: "update_markers requires a non-empty `markers` array",
                 },
               ],
               isError: true,
             };
-          const updates = markers.filter((m) => m.id);
-          if (updates.length === 0)
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Each marker in `markers` must have an `id`",
-                },
-              ],
-              isError: true,
-            };
-          enqueueCommand(uuid, {
-            type: "update_markers",
-            markers: updates as {
-              id: string;
-              latitude?: number;
-              longitude?: number;
-              label?: string;
-              color?: string;
-            }[],
-          });
+          enqueueCommand(uuid, { type: "update_markers", markers });
           return {
             content: [
               {
                 type: "text",
-                text: `Queued: update ${updates.length} marker(s)`,
+                text: `Queued: update ${markers.length} marker(s)`,
               },
             ],
           };
