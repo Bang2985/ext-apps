@@ -2386,9 +2386,15 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
-  // Don't handle nav shortcuts when search input is focused
+  // Don't handle nav shortcuts when an input element is focused
   if (document.activeElement === searchInputEl) return;
   if (document.activeElement === pageInputEl) return;
+  if (
+    document.activeElement instanceof HTMLInputElement ||
+    document.activeElement instanceof HTMLTextAreaElement ||
+    document.activeElement instanceof HTMLSelectElement
+  )
+    return;
 
   // Ctrl/Cmd+0 to reset zoom
   if ((e.ctrlKey || e.metaKey) && e.key === "0") {
