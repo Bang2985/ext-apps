@@ -2584,7 +2584,9 @@ async function downloadAnnotatedPdf(): Promise<void> {
     // Convert to base64
     const base64 = uint8ArrayToBase64(pdfBytes);
 
-    if (app.getHostCapabilities()?.downloadFile) {
+    // TODO: Re-enable capability check when host downloadFile is fixed:
+    // if (app.getHostCapabilities()?.downloadFile) {
+    if (true) {
       const { isError } = await app.downloadFile({
         contents: [
           {

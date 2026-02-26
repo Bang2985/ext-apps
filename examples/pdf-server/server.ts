@@ -246,6 +246,17 @@ interface PendingPageRequest {
 
 const pendingPageRequests = new Map<string, PendingPageRequest>();
 
+/** Wait for the client to render and submit page data for a given request. */
+function waitForPageData(requestId: string): Promise<PageDataEntry[]> {
+  return new Promise<PageDataEntry[]>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingPageRequests.delete(requestId);
+      reject(new Error("Timeout waiting for page data from viewer"));
+    }, GET_PAGES_TIMEOUT_MS);
+    pendingPageRequests.set(requestId, { resolve, reject, timer });
+  });
+}
+
 interface QueueEntry {
   commands: PdfCommand[];
   /** Timestamp of the most recent enqueue or dequeue */
@@ -1122,14 +1133,17 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
         "remove_annotations",
         "highlight_text",
         "fill_form",
-        "get_pages",
+        "get_text",
+        "get_screenshot",
       ])
       .describe("Action to perform"),
     page: z
       .number()
       .min(1)
       .optional()
-      .describe("Page number (for navigate, highlight_text)"),
+      .describe(
+        "Page number (for navigate, highlight_text, get_screenshot, get_text)",
+      ),
     query: z
       .string()
       .optional()
@@ -1173,17 +1187,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       .array(PageInterval)
       .optional()
       .describe(
-        "Page ranges for get_pages. Each has optional start/end. [{start:1,end:5}], [{}] = all pages.",
-      ),
-    getText: z
-      .boolean()
-      .optional()
-      .describe("Include text content (for get_pages, default true)"),
-    getScreenshots: z
-      .boolean()
-      .optional()
-      .describe(
-        "Include page screenshots as PNG images (for get_pages, default false)",
+        "Page ranges for get_text. Each has optional start/end. [{start:1,end:5}], [{}] = all pages. Max 20 pages.",
       ),
   });
 
@@ -1209,8 +1213,6 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       content,
       fields,
       intervals,
-      getText,
-      getScreenshots,
     } = cmd;
 
     let description: string;
@@ -1375,21 +1377,9 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
         }
         break;
       }
-      case "get_pages": {
-        const resolvedIntervals = intervals ?? [{}];
-        const resolvedGetText = getText ?? true;
-        const resolvedGetScreenshots = getScreenshots ?? false;
-        if (!resolvedGetText && !resolvedGetScreenshots) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "get_pages: at least one of getText or getScreenshots must be true",
-              },
-            ],
-            isError: true,
-          };
-        }
+      case "get_text": {
+        const resolvedIntervals =
+          intervals ?? (page ? [{ start: page, end: page }] : [{}]);
 
         const requestId = randomUUID();
 
@@ -1397,23 +1387,13 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           type: "get_pages",
           requestId,
           intervals: resolvedIntervals,
-          getText: resolvedGetText,
-          getScreenshots: resolvedGetScreenshots,
+          getText: true,
+          getScreenshots: false,
         });
 
         let pageData: PageDataEntry[];
         try {
-          pageData = await new Promise<PageDataEntry[]>((resolve, reject) => {
-            const timer = setTimeout(() => {
-              pendingPageRequests.delete(requestId);
-              reject(new Error("Timeout waiting for page data from viewer"));
-            }, GET_PAGES_TIMEOUT_MS);
-            pendingPageRequests.set(requestId, {
-              resolve,
-              reject,
-              timer,
-            });
-          });
+          pageData = await waitForPageData(requestId);
         } catch (err) {
           return {
             content: [
@@ -1426,29 +1406,68 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           };
         }
 
-        const pageContent: ContentPart[] = [];
+        const textParts: ContentPart[] = [];
         for (const entry of pageData) {
           if (entry.text != null) {
-            pageContent.push({
+            textParts.push({
               type: "text",
               text: `--- Page ${entry.page} ---\n${entry.text}`,
             });
           }
-          if (entry.image) {
-            pageContent.push({
-              type: "image",
-              data: entry.image,
-              mimeType: "image/png",
-            });
-          }
         }
-        if (pageContent.length === 0) {
-          pageContent.push({
-            type: "text",
-            text: "No page data returned",
-          });
+        if (textParts.length === 0) {
+          textParts.push({ type: "text", text: "No text content returned" });
         }
-        return { content: pageContent };
+        return { content: textParts };
+      }
+      case "get_screenshot": {
+        if (page == null)
+          return {
+            content: [{ type: "text", text: "get_screenshot requires `page`" }],
+            isError: true,
+          };
+
+        const requestId = randomUUID();
+
+        enqueueCommand(uuid, {
+          type: "get_pages",
+          requestId,
+          intervals: [{ start: page, end: page }],
+          getText: false,
+          getScreenshots: true,
+        });
+
+        let pageData: PageDataEntry[];
+        try {
+          pageData = await waitForPageData(requestId);
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: ${err instanceof Error ? err.message : String(err)}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const entry = pageData[0];
+        if (entry?.image) {
+          return {
+            content: [
+              {
+                type: "image",
+                data: entry.image,
+                mimeType: "image/png",
+              },
+            ],
+          };
+        }
+        return {
+          content: [{ type: "text", text: "No screenshot returned" }],
+          isError: true,
+        };
       }
       default:
         return {
@@ -1466,57 +1485,43 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
     "interact",
     {
       title: "Interact with PDF",
-      description: `Interact with a PDF viewer: annotate, navigate, search, extract pages, fill forms.
+      description: `Interact with a PDF viewer: annotate, navigate, search, extract text/screenshots, fill forms.
 IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3d4-..."). Do NOT use arbitrary strings.
 
-**BATCHING**: You can send multiple commands in one call using the \`commands\` array. Commands are processed sequentially. This is more efficient than making separate calls. TIP: End your batch with \`{"action":"get_pages","intervals":[{}],"getScreenshots":true}\` to see the result of your changes.
+**BATCHING**: Send multiple commands in one call via \`commands\` array. Commands run sequentially. TIP: End with \`get_screenshot\` to verify your changes.
 
-**ANNOTATION** — You can add visual annotations to any page. Use add_annotations with an array of annotation objects.
-Each annotation needs: id (unique string), type, page (1-indexed).
+**ANNOTATION** — add_annotations with array of annotation objects. Each needs: id (unique string), type, page (1-indexed).
 
-**COORDINATE SYSTEM**: All coordinates are in PDF points (1 point = 1/72 inch).
-- Origin is at the BOTTOM-LEFT corner of the page.
-- X increases to the right (x=0 is left edge).
-- Y increases UPWARD (y=0 is bottom edge, y=pageHeight is top edge).
-- The model context shows the current page size (e.g. "Page size: 612×792pt"). Use these values to position annotations correctly.
-- For US Letter (612×792pt): top of page ≈ y=750, middle ≈ y=400, bottom ≈ y=50. Left margin ≈ x=72, right margin ≈ x=540.
-- For rects (highlight/underline/strikethrough): {x, y, width, height} where y is the BOTTOM edge of the rect.
+**COORDINATE SYSTEM**: PDF points (1pt = 1/72in), origin at BOTTOM-LEFT. X→right, Y→up.
+- Page size in model context (e.g. "612×792pt"). US Letter: top≈y=750, mid≈y=400, bottom≈y=50, left≈x=72, right≈x=540.
 
 Annotation types:
-• highlight: rects:[{x,y,width,height}], color?, content? — semi-transparent overlay on text regions
-• underline: rects:[{x,y,width,height}], color? — underline below text
-• strikethrough: rects:[{x,y,width,height}], color? — line through text
-• note: x, y, content, color? — sticky note icon with tooltip
-• rectangle: x, y, width, height, color?, fillColor? — outlined/filled box
-• freetext: x, y, content, fontSize?, color? — arbitrary text label
-• stamp: x, y, label (APPROVED|DRAFT|CONFIDENTIAL|FINAL|VOID|REJECTED), color?, rotation? — stamp overlay
+• highlight: rects:[{x,y,width,height}], color?, content? • underline: rects:[{x,y,w,h}], color?
+• strikethrough: rects:[{x,y,w,h}], color? • note: x, y, content, color?
+• rectangle: x, y, width, height, color?, fillColor? • freetext: x, y, content, fontSize?, color?
+• stamp: x, y, label (APPROVED|DRAFT|CONFIDENTIAL|FINAL|VOID|REJECTED), color?, rotation?
 
-TIP: Use get_pages with getScreenshots=true to see what's on a page, then use the page size from model context to calculate coordinates. For text-based annotations, prefer highlight_text (auto-finds text by query) over manually placing rects.
+TIP: For text annotations, prefer highlight_text (auto-finds text) over manual rects.
 
-Example — add annotations and get a screenshot to verify, in one call:
+Example — add annotations then screenshot to verify:
 \`\`\`json
 {"viewUUID":"…","commands":[
   {"action":"add_annotations","annotations":[
     {"id":"h1","type":"highlight","page":1,"rects":[{"x":72,"y":700,"width":200,"height":12}]},
-    {"id":"s1","type":"stamp","page":1,"x":300,"y":400,"label":"APPROVED","color":"green","rotation":-15}
+    {"id":"s1","type":"stamp","page":1,"x":300,"y":400,"label":"APPROVED"}
   ]},
-  {"action":"get_pages","intervals":[{"start":1,"end":1}],"getScreenshots":true}
+  {"action":"get_screenshot","page":1}
 ]}
 \`\`\`
 
-**HIGHLIGHT TEXT** — highlight_text: auto-find and highlight text by query. Requires \`query\`. Optional: page, color, content.
+• highlight_text: auto-find and highlight text (query, page?, color?, content?)
+• update_annotations: partial update (id+type required) • remove_annotations: remove by ids
 
-**ANNOTATION MANAGEMENT**:
-• update_annotations: partial update (id+type required). • remove_annotations: remove by ids.
+**NAVIGATION**: navigate (page), search (query), find (query, silent), search_navigate (matchIndex), zoom (scale 0.5–3.0)
 
-**NAVIGATION & SEARCH**:
-• navigate: go to page (requires \`page\`)
-• search: highlight matches in UI (requires \`query\`). Results in model context.
-• find: silent search, no UI change (requires \`query\`). Results in model context.
-• search_navigate: jump to match (requires \`matchIndex\`)
-• zoom: set scale 0.5–3.0 (requires \`scale\`)
-
-**PAGE EXTRACTION** — get_pages: extract text/screenshots from page ranges without navigating. \`intervals\` = [{start?,end?}], e.g. [{}] for all. \`getText\` (default true), \`getScreenshots\` (default false). Max 20 pages.
+**TEXT/SCREENSHOTS**:
+• get_text: extract text from pages. Optional \`page\` for single page, or \`intervals\` for ranges [{start?,end?}]. Max 20 pages.
+• get_screenshot: capture a single page as PNG image. Requires \`page\`.
 
 **FORMS** — fill_form: fill fields with \`fields\` array of {name, value}.`,
       inputSchema: {
@@ -1536,7 +1541,8 @@ Example — add annotations and get a screenshot to verify, in one call:
             "remove_annotations",
             "highlight_text",
             "fill_form",
-            "get_pages",
+            "get_text",
+            "get_screenshot",
           ])
           .optional()
           .describe(
@@ -1546,7 +1552,9 @@ Example — add annotations and get a screenshot to verify, in one call:
           .number()
           .min(1)
           .optional()
-          .describe("Page number (for navigate, highlight_text)"),
+          .describe(
+            "Page number (for navigate, highlight_text, get_screenshot, get_text)",
+          ),
         query: z
           .string()
           .optional()
@@ -1590,17 +1598,7 @@ Example — add annotations and get a screenshot to verify, in one call:
           .array(PageInterval)
           .optional()
           .describe(
-            "Page ranges for get_pages. Each has optional start/end. [{start:1,end:5}], [{}] = all pages.",
-          ),
-        getText: z
-          .boolean()
-          .optional()
-          .describe("Include text content (for get_pages, default true)"),
-        getScreenshots: z
-          .boolean()
-          .optional()
-          .describe(
-            "Include page screenshots as PNG images (for get_pages, default false)",
+            "Page ranges for get_text. Each has optional start/end. [{start:1,end:5}], [{}] = all pages. Max 20 pages.",
           ),
         // Batch mode
         commands: z
@@ -1624,8 +1622,6 @@ Example — add annotations and get a screenshot to verify, in one call:
       content,
       fields,
       intervals,
-      getText,
-      getScreenshots,
       commands,
     }): Promise<CallToolResult> => {
       // Validate viewUUID — must be one issued by display_pdf
@@ -1658,8 +1654,6 @@ Example — add annotations and get a screenshot to verify, in one call:
                 content,
                 fields,
                 intervals,
-                getText,
-                getScreenshots,
               },
             ]
           : [];
@@ -1683,26 +1677,10 @@ Example — add annotations and get a screenshot to verify, in one call:
       for (let i = 0; i < commandList.length; i++) {
         const result = await processInteractCommand(uuid, commandList[i]);
         if (result.isError) {
-          // Prefix error with command index for batch clarity
-          if (commandList.length > 1) {
-            const firstText = result.content.find((c) => c.type === "text");
-            if (firstText && firstText.type === "text") {
-              firstText.text = `[${i + 1}/${commandList.length}] ${firstText.text}`;
-            }
-          }
-          allContent.push(...result.content);
           hasError = true;
-          break; // Stop on first error
-        }
-        if (commandList.length > 1) {
-          // For batch mode, prefix text results with command index
-          for (const part of result.content) {
-            if (part.type === "text" && !part.text.startsWith("--- Page")) {
-              part.text = `[${i + 1}/${commandList.length}] ${part.text}`;
-            }
-          }
         }
         allContent.push(...result.content);
+        if (hasError) break; // Stop on first error
       }
 
       return {
