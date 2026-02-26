@@ -886,13 +886,13 @@ async function updatePageContext() {
             scale: scale * screenshotScale * dpr,
           };
           paintAnnotationsOnCanvas(ctx, currentPage, screenshotVp);
-          const dataUrl = tempCanvas.toDataURL("image/png");
+          const dataUrl = tempCanvas.toDataURL("image/jpeg", 0.85);
           const base64Data = dataUrl.split(",")[1];
           if (base64Data) {
             contentBlocks.push({
               type: "image",
               data: base64Data,
-              mimeType: "image/png",
+              mimeType: "image/jpeg",
             });
             log.info(
               `Added screenshot to model context (${targetWidth}x${targetHeight})`,
@@ -2092,7 +2092,7 @@ function expandIntervals(
 }
 
 /**
- * Render a single page to an offscreen canvas and return base64 PNG.
+ * Render a single page to an offscreen canvas and return base64 JPEG.
  * Does not affect the visible canvas or text layer.
  */
 async function renderPageOffscreen(pageNum: number): Promise<string> {
@@ -2123,8 +2123,8 @@ async function renderPageOffscreen(pageNum: number): Promise<string> {
     scale: renderScale,
   });
 
-  // Extract base64 (strip data URL prefix)
-  const dataUrl = canvas.toDataURL("image/png");
+  // Extract base64 JPEG (much smaller than PNG, well within body limits)
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
   return dataUrl.split(",")[1];
 }
 

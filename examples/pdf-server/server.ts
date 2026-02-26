@@ -1459,7 +1459,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
               {
                 type: "image",
                 data: entry.image,
-                mimeType: "image/png",
+                mimeType: "image/jpeg",
               },
             ],
           };
