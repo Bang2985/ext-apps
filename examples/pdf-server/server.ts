@@ -25,6 +25,18 @@ import {
   type CallToolResult,
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+  PDFDocument as PdfLibDocument,
+  PDFTextField as PdfLibTextField,
+  PDFCheckBox as PdfLibCheckBox,
+  PDFDropdown as PdfLibDropdown,
+  PDFRadioGroup as PdfLibRadioGroup,
+  PDFOptionList as PdfLibOptionList,
+} from "pdf-lib";
+import type {
+  PrimitiveSchemaDefinition,
+  ElicitResult,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 // =============================================================================
@@ -676,6 +688,87 @@ async function refreshRoots(server: Server): Promise<void> {
 }
 
 // =============================================================================
+// PDF Form Field Extraction
+// =============================================================================
+
+/**
+ * Extract form fields from a PDF and build an elicitation schema.
+ * Returns null if the PDF has no form fields.
+ */
+async function extractFormSchema(
+  url: string,
+  readRange: (
+    url: string,
+    offset: number,
+    byteCount: number,
+  ) => Promise<{ data: Uint8Array; totalBytes: number }>,
+): Promise<{
+  type: "object";
+  properties: Record<string, PrimitiveSchemaDefinition>;
+  required?: string[];
+} | null> {
+  // Read full PDF bytes
+  const { totalBytes } = await readRange(url, 0, 1);
+  const { data } = await readRange(url, 0, totalBytes);
+
+  const pdfDoc = await PdfLibDocument.load(data, {
+    ignoreEncryption: true,
+  });
+
+  let fields;
+  try {
+    fields = pdfDoc.getForm().getFields();
+  } catch {
+    return null;
+  }
+  if (fields.length === 0) return null;
+
+  const properties: Record<string, PrimitiveSchemaDefinition> = {};
+  for (const field of fields) {
+    if (field.isReadOnly()) continue;
+    const name = field.getName();
+    if (field instanceof PdfLibCheckBox) {
+      properties[name] = { type: "boolean", title: name };
+    } else if (
+      field instanceof PdfLibDropdown ||
+      field instanceof PdfLibRadioGroup
+    ) {
+      const options =
+        field instanceof PdfLibDropdown
+          ? field.getOptions()
+          : field.getOptions();
+      if (options.length > 0) {
+        properties[name] = {
+          type: "string",
+          title: name,
+          enum: options,
+        };
+      } else {
+        properties[name] = { type: "string", title: name };
+      }
+    } else if (field instanceof PdfLibOptionList) {
+      const options = field.getOptions();
+      if (options.length > 0) {
+        properties[name] = {
+          type: "string",
+          title: name,
+          enum: options,
+        };
+      } else {
+        properties[name] = { type: "string", title: name };
+      }
+    } else if (field instanceof PdfLibTextField) {
+      properties[name] = { type: "string", title: name };
+    }
+    // Skip buttons, signatures, and unknown field types
+  }
+
+  if (Object.keys(properties).length === 0) return null;
+
+  return { type: "object", properties };
+}
+
+// =============================================================================
 // MCP Server Factory
 // =============================================================================
 
@@ -819,27 +912,40 @@ export function createServer(): McpServer {
     "display_pdf",
     {
       title: "Display PDF",
-      description: `Display an interactive PDF viewer.
+      description: `Display an interactive PDF viewer with form filling support.
 
 Accepts:
 - Local files explicitly added to the server (use list_pdfs to see available files)
 - Local files under directories provided by the client as MCP roots
-- Any remote PDF accessible via HTTPS`,
+- Any remote PDF accessible via HTTPS
+
+If the PDF contains form fields, users can fill them interactively in the viewer, or the model can fill them programmatically via the \`interact\` tool's \`fill_form\` action.
+Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before the PDF is displayed.`,
       inputSchema: {
         url: z
           .string()
           .default(DEFAULT_PDF)
           .describe("PDF URL or local file path"),
         page: z.number().min(1).default(1).describe("Initial page"),
+        elicit_form_inputs: z
+          .boolean()
+          .default(false)
+          .describe(
+            "If true and the PDF has form fields, prompt the user to fill them before displaying",
+          ),
       },
       outputSchema: z.object({
         url: z.string(),
         initialPage: z.number(),
         totalBytes: z.number(),
+        formFieldValues: z
+          .record(z.string(), z.union([z.string(), z.boolean()]))
+          .optional()
+          .describe("Form field values filled by the user via elicitation"),
       }),
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
-    async ({ url, page }): Promise<CallToolResult> => {
+    async ({ url, page, elicit_form_inputs }): Promise<CallToolResult> => {
       const normalized = isArxivUrl(url) ? normalizeArxivUrl(url) : url;
       const validation = validateUrl(normalized);
 
@@ -855,17 +961,78 @@ Accepts:
       const uuid = randomUUID();
       activeViewUUIDs.add(uuid);
 
+      // Elicit form field values if requested and client supports it
+      let formFieldValues: Record<string, string | boolean> | undefined;
+      let elicitResult: ElicitResult | undefined;
+      if (elicit_form_inputs) {
+        const clientCaps = server.server.getClientCapabilities();
+        if (clientCaps?.elicitation?.form) {
+          try {
+            const schema = await extractFormSchema(normalized, readPdfRange);
+            if (schema) {
+              elicitResult = await server.server.elicitInput({
+                message: `Please fill in the PDF form fields for "${normalized.split("/").pop() || normalized}":`,
+                requestedSchema: schema,
+              });
+              if (elicitResult.action === "accept" && elicitResult.content) {
+                formFieldValues = {};
+                for (const [k, v] of Object.entries(elicitResult.content)) {
+                  if (typeof v === "string" || typeof v === "boolean") {
+                    formFieldValues[k] = v;
+                  }
+                }
+                // Queue fill_form command so the viewer picks it up
+                enqueueCommand(uuid, {
+                  type: "fill_form",
+                  fields: Object.entries(formFieldValues).map(
+                    ([name, value]) => ({ name, value }),
+                  ),
+                });
+              }
+            }
+          } catch (err) {
+            // Elicitation failed — continue without form values
+            console.error("[pdf-server] Form elicitation failed:", err);
+          }
+        }
+      }
+
+      const contentParts: Array<{ type: "text"; text: string }> = [
+        {
+          type: "text",
+          text: `Displaying PDF (viewUUID: ${uuid}): ${normalized}.\n\nUse the \`interact\` tool with this viewUUID. Available actions:\n- navigate: go to a page\n- search / find: search text (search highlights in UI, find is silent)\n- search_navigate: jump to a search match by index\n- zoom: set zoom level (0.5–3.0)\n- add_annotations: add highlights, underlines, strikethroughs, notes, rectangles, freetext, stamps (APPROVED/DRAFT/CONFIDENTIAL/FINAL/VOID/REJECTED)\n- update_annotations: partially update existing annotations\n- remove_annotations: remove annotations by ID\n- highlight_text: find text by query and highlight it automatically\n- fill_form: fill PDF form fields\n- get_pages: extract text and/or screenshots from page ranges without navigating`,
+        },
+      ];
+
+      if (formFieldValues && Object.keys(formFieldValues).length > 0) {
+        const fieldSummary = Object.entries(formFieldValues)
+          .map(
+            ([name, value]) =>
+              `  ${name}: ${typeof value === "boolean" ? (value ? "checked" : "unchecked") : value}`,
+          )
+          .join("\n");
+        contentParts.push({
+          type: "text",
+          text: `\nUser-provided form field values:\n${fieldSummary}`,
+        });
+      } else if (
+        elicit_form_inputs &&
+        elicitResult &&
+        elicitResult.action !== "accept"
+      ) {
+        contentParts.push({
+          type: "text",
+          text: `\nForm elicitation was ${elicitResult.action}d by the user.`,
+        });
+      }
+
       return {
-        content: [
-          {
-            type: "text",
-            text: `Displaying PDF (viewUUID: ${uuid}): ${normalized}.\n\nUse the \`interact\` tool with this viewUUID. Available actions:\n- navigate: go to a page\n- search / find: search text (search highlights in UI, find is silent)\n- search_navigate: jump to a search match by index\n- zoom: set zoom level (0.5–3.0)\n- add_annotations: add highlights, underlines, strikethroughs, notes, rectangles, freetext, stamps (APPROVED/DRAFT/CONFIDENTIAL/FINAL/VOID/REJECTED)\n- update_annotations: partially update existing annotations\n- remove_annotations: remove annotations by ID\n- highlight_text: find text by query and highlight it automatically\n- fill_form: fill PDF form fields\n- get_pages: extract text and/or screenshots from page ranges without navigating`,
-          },
-        ],
+        content: contentParts,
         structuredContent: {
           url: normalized,
           initialPage: page,
           totalBytes,
+          ...(formFieldValues ? { formFieldValues } : {}),
         },
         _meta: {
           viewUUID: uuid,
