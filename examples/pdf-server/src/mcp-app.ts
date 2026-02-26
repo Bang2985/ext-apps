@@ -2373,12 +2373,8 @@ async function downloadAnnotatedPdf(): Promise<void> {
   downloadBtn.title = "Preparing download...";
 
   try {
-    // Fetch full PDF bytes
-    const totalBytes =
-      parseInt(canvasEl.dataset.totalBytes || "0", 10) ||
-      (await fetchRange(pdfUrl, 0, 1)).totalBytes;
-
-    const { bytes: fullBytes } = await fetchRange(pdfUrl, 0, totalBytes);
+    // Get raw PDF bytes directly from pdf.js (already loaded in memory)
+    const fullBytes = await pdfDocument.getData();
 
     // Load with pdf-lib
     const pdfDoc = await PDFDocument.load(fullBytes, {
