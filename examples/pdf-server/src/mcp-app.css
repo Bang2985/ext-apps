@@ -853,13 +853,13 @@ body {
   stroke: #e74c3c;
 }
 
-/* Annotation Strip (inline mode compact bottom bar) */
+/* Annotation Strip (inline mode compact bar below toolbar) */
 .annotation-strip {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
-  border-top: 1px solid var(--bg200);
+  border-bottom: 1px solid var(--bg200);
   background: var(--bg000);
   font-size: 0.8rem;
   min-height: 32px;

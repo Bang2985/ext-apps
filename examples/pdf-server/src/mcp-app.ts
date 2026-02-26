@@ -1142,16 +1142,18 @@ function setAnnotationPanelOpen(open: boolean): void {
   updateAnnotationsBadge();
 
   if (currentDisplayMode === "inline") {
-    // Inline mode: use bottom strip, never show side panel
+    // Inline mode: use strip below toolbar, never show side panel
     annotationsPanelEl.style.display = "none";
     if (open) {
       renderStrip();
     } else {
       stripEl.style.display = "none";
+      updateSearchBarOffset();
     }
   } else {
     // Fullscreen mode: use side panel, never show strip
     stripEl.style.display = "none";
+    updateSearchBarOffset();
     annotationsPanelEl.style.display = open ? "" : "none";
     if (open) {
       renderAnnotationPanel();
@@ -1314,10 +1316,18 @@ function buildStripItems(): StripItem[] {
   return items;
 }
 
+function updateSearchBarOffset(): void {
+  // Search bar is absolutely positioned; adjust its top to account for strip
+  const stripHeight =
+    stripEl.style.display !== "none" ? stripEl.offsetHeight : 0;
+  searchBarEl.style.top = `${47 + stripHeight}px`;
+}
+
 function renderStrip(): void {
   stripItems = buildStripItems();
   if (stripItems.length === 0) {
     stripEl.style.display = "none";
+    updateSearchBarOffset();
     requestFitToContent();
     return;
   }
@@ -1353,6 +1363,7 @@ function renderStrip(): void {
   stripPrevBtn.disabled = stripIndex <= 0;
   stripNextBtn.disabled = stripIndex >= stripItems.length - 1;
 
+  updateSearchBarOffset();
   requestFitToContent();
 }
 
@@ -2749,6 +2760,26 @@ formLayerEl.addEventListener("input", (e) => {
   }
   persistAnnotations();
 });
+
+// Track form field focus to sync the strip
+formLayerEl.addEventListener(
+  "focusin",
+  (e) => {
+    const target = e.target as HTMLInputElement | HTMLSelectElement;
+    const fieldName = target.name;
+    if (!fieldName || currentDisplayMode !== "inline" || !annotationPanelOpen)
+      return;
+    // Find the strip item index for this field
+    const idx = stripItems.findIndex(
+      (item) => item.kind === "formField" && item.id === fieldName,
+    );
+    if (idx >= 0 && idx !== stripIndex) {
+      stripIndex = idx;
+      renderStrip();
+    }
+  },
+  true,
+);
 
 initAnnotationPanel();
 
