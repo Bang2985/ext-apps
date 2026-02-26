@@ -143,6 +143,8 @@ const formFieldValues = new Map<string, string | boolean>();
 
 // PDF.js form field name → annotation IDs mapping (for annotationStorage)
 const fieldNameToIds = new Map<string, string[]>();
+// PDF.js form field name → page number mapping (for strip counter)
+const fieldNameToPage = new Map<string, number>();
 
 // DOM Elements
 const mainEl = document.querySelector(".main") as HTMLElement;
@@ -205,6 +207,31 @@ const annotationsBtn = document.getElementById(
 const annotationsBadgeEl = document.getElementById(
   "annotations-badge",
 ) as HTMLElement;
+
+// Annotation Strip DOM Elements (inline mode)
+const stripEl = document.getElementById("annotation-strip")!;
+const stripItemEl = document.getElementById("strip-item")!;
+const stripCounterEl = document.getElementById("strip-counter")!;
+const stripPrevBtn = document.getElementById("strip-prev") as HTMLButtonElement;
+const stripNextBtn = document.getElementById("strip-next") as HTMLButtonElement;
+const stripDeleteBtn = document.getElementById(
+  "strip-delete",
+) as HTMLButtonElement;
+const stripClearAllBtn = document.getElementById(
+  "strip-clear-all",
+) as HTMLButtonElement;
+
+// Annotation strip state
+interface StripItem {
+  kind: "annotation" | "formField";
+  page: number;
+  id: string; // annotation id or field name
+  label: string; // type or field name
+  preview: string; // content preview or value
+  color: string; // swatch color
+}
+let stripIndex = 0;
+let stripItems: StripItem[] = [];
 
 // Annotation panel state
 let annotationPanelOpen = false;
@@ -270,17 +297,23 @@ function requestFitToContent() {
   const paddingBottom = parseFloat(containerStyle.paddingBottom);
 
   // Calculate required height:
-  // toolbar + padding-top + page-wrapper height + padding-bottom + buffer
+  // toolbar + padding-top + page-wrapper height + padding-bottom + strip + buffer
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
+  const stripHeight =
+    stripEl.style.display !== "none" ? stripEl.offsetHeight : 0;
   const BUFFER = 10; // Buffer for sub-pixel rounding and browser quirks
   const totalHeight =
-    toolbarHeight + paddingTop + pageWrapperHeight + paddingBottom + BUFFER;
+    toolbarHeight +
+    paddingTop +
+    pageWrapperHeight +
+    paddingBottom +
+    stripHeight +
+    BUFFER;
 
-  // Include annotation panel width if open
-  const panelWidth = annotationPanelOpen ? annotationsPanelEl.offsetWidth : 0;
-  const totalWidth = pageWrapperEl.offsetWidth + panelWidth + BUFFER;
+  // In inline mode (this function early-returns for fullscreen) the side panel is hidden
+  const totalWidth = pageWrapperEl.offsetWidth + BUFFER;
 
   app.sendSizeChanged({ width: totalWidth, height: totalHeight });
 }
@@ -1103,11 +1136,24 @@ function removeAnnotation(id: string): void {
 
 function setAnnotationPanelOpen(open: boolean): void {
   annotationPanelOpen = open;
-  annotationsPanelEl.style.display = open ? "" : "none";
   annotationsBtn.classList.toggle("active", open);
   updateAnnotationsBadge();
-  if (open) {
-    renderAnnotationPanel();
+
+  if (currentDisplayMode === "inline") {
+    // Inline mode: use bottom strip, never show side panel
+    annotationsPanelEl.style.display = "none";
+    if (open) {
+      renderStrip();
+    } else {
+      stripEl.style.display = "none";
+    }
+  } else {
+    // Fullscreen mode: use side panel, never show strip
+    stripEl.style.display = "none";
+    annotationsPanelEl.style.display = open ? "" : "none";
+    if (open) {
+      renderAnnotationPanel();
+    }
   }
   requestFitToContent();
 }
@@ -1194,8 +1240,114 @@ function getAnnotationY(def: PdfAnnotationDef): number {
   return 0;
 }
 
+// =============================================================================
+// Annotation Strip (inline mode compact bottom bar)
+// =============================================================================
+
+function buildStripItems(): StripItem[] {
+  const items: StripItem[] = [];
+
+  // Annotations grouped by page
+  const byPage = new Map<number, TrackedAnnotation[]>();
+  for (const tracked of annotationMap.values()) {
+    const page = tracked.def.page;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page)!.push(tracked);
+  }
+  const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
+  for (const pageNum of sortedPages) {
+    const annotations = byPage.get(pageNum)!;
+    annotations.sort((a, b) => getAnnotationY(b.def) - getAnnotationY(a.def));
+    for (const tracked of annotations) {
+      items.push({
+        kind: "annotation",
+        page: pageNum,
+        id: tracked.def.id,
+        label: tracked.def.type,
+        preview: getAnnotationPreview(tracked.def),
+        color: getAnnotationColor(tracked.def),
+      });
+    }
+  }
+
+  // Form fields grouped by page
+  const formByPage = new Map<number, Array<[string, string | boolean]>>();
+  for (const [name, value] of formFieldValues) {
+    const page = fieldNameToPage.get(name) ?? 1;
+    if (!formByPage.has(page)) formByPage.set(page, []);
+    formByPage.get(page)!.push([name, value]);
+  }
+  const formPages = [...formByPage.keys()].sort((a, b) => a - b);
+  for (const pageNum of formPages) {
+    for (const [name, value] of formByPage.get(pageNum)!) {
+      items.push({
+        kind: "formField",
+        page: pageNum,
+        id: name,
+        label: name,
+        preview:
+          typeof value === "boolean"
+            ? value
+              ? "checked"
+              : "unchecked"
+            : value,
+        color: "#4a90d9",
+      });
+    }
+  }
+
+  return items;
+}
+
+function renderStrip(): void {
+  stripItems = buildStripItems();
+  if (stripItems.length === 0) {
+    stripEl.style.display = "none";
+    requestFitToContent();
+    return;
+  }
+
+  stripEl.style.display = "";
+  stripIndex = Math.min(stripIndex, stripItems.length - 1);
+  if (stripIndex < 0) stripIndex = 0;
+  const item = stripItems[stripIndex];
+
+  // Render item content
+  stripItemEl.innerHTML = "";
+  const swatch = document.createElement("div");
+  swatch.className = "annotation-card-swatch";
+  swatch.style.background = item.color;
+  stripItemEl.appendChild(swatch);
+
+  const label = document.createElement("span");
+  label.className = "annotation-card-type";
+  label.textContent = item.label;
+  stripItemEl.appendChild(label);
+
+  if (item.preview) {
+    const preview = document.createElement("span");
+    preview.className = "annotation-card-preview";
+    preview.textContent = item.preview;
+    stripItemEl.appendChild(preview);
+  }
+
+  // Counter: "3 of 7 · Page 2"
+  stripCounterEl.textContent = `${stripIndex + 1} of ${stripItems.length} · Page ${item.page}`;
+
+  // Enable/disable arrows
+  stripPrevBtn.disabled = stripIndex <= 0;
+  stripNextBtn.disabled = stripIndex >= stripItems.length - 1;
+
+  requestFitToContent();
+}
+
 function renderAnnotationPanel(): void {
   if (!annotationPanelOpen) return;
+  // In inline mode, delegate to the compact strip
+  if (currentDisplayMode === "inline") {
+    renderStrip();
+    return;
+  }
 
   annotationsPanelCountEl.textContent = String(sidebarItemCount());
 
@@ -1439,7 +1591,103 @@ function initAnnotationPanel(): void {
   annotationsBtn.addEventListener("click", toggleAnnotationPanel);
   annotationsPanelCloseBtn.addEventListener("click", toggleAnnotationPanel);
 
+  // Strip navigation
+  stripPrevBtn.addEventListener("click", () => {
+    if (stripIndex > 0) {
+      stripIndex--;
+      renderStrip();
+      navigateToStripItem(stripItems[stripIndex]);
+    }
+  });
+  stripNextBtn.addEventListener("click", () => {
+    if (stripIndex < stripItems.length - 1) {
+      stripIndex++;
+      renderStrip();
+      navigateToStripItem(stripItems[stripIndex]);
+    }
+  });
+  stripItemEl.addEventListener("click", () => {
+    if (stripItems.length > 0) {
+      navigateToStripItem(stripItems[stripIndex]);
+    }
+  });
+  stripDeleteBtn.addEventListener("click", () => {
+    if (stripItems.length === 0) return;
+    const item = stripItems[stripIndex];
+    deleteStripItem(item);
+  });
+  stripClearAllBtn.addEventListener("click", () => {
+    clearAllItems();
+  });
+
   updateAnnotationsBadge();
+}
+
+function navigateToStripItem(item: StripItem): void {
+  if (item.page !== currentPage) {
+    goToPage(item.page);
+    if (item.kind === "annotation") {
+      setTimeout(() => pulseAnnotation(item.id), 300);
+    }
+  } else if (item.kind === "annotation") {
+    pulseAnnotation(item.id);
+  }
+}
+
+function deleteStripItem(item: StripItem): void {
+  if (item.kind === "annotation") {
+    removeAnnotation(item.id);
+  } else {
+    formFieldValues.delete(item.id);
+    if (pdfDocument) {
+      const ids = fieldNameToIds.get(item.id);
+      if (ids) {
+        for (const id of ids) {
+          pdfDocument.annotationStorage.remove(id);
+        }
+      }
+    }
+    updateAnnotationsBadge();
+    renderPage();
+  }
+  persistAnnotations();
+  if (annotationPanelOpen) {
+    if (currentDisplayMode === "inline") {
+      renderStrip();
+    } else {
+      renderAnnotationPanel();
+    }
+  }
+}
+
+function clearAllItems(): void {
+  // Clear all annotations
+  for (const [, tracked] of annotationMap) {
+    for (const el of tracked.elements) el.remove();
+  }
+  annotationMap.clear();
+
+  // Clear all form field values
+  if (pdfDocument) {
+    for (const [name] of formFieldValues) {
+      const ids = fieldNameToIds.get(name);
+      if (ids) {
+        for (const id of ids) {
+          pdfDocument.annotationStorage.remove(id);
+        }
+      }
+    }
+  }
+  formFieldValues.clear();
+
+  updateAnnotationsBadge();
+  persistAnnotations();
+  renderPage();
+  if (currentDisplayMode === "inline") {
+    renderStrip();
+  } else {
+    renderAnnotationPanel();
+  }
 }
 
 // =============================================================================
@@ -1763,15 +2011,22 @@ async function buildFieldNameMap(
   doc: pdfjsLib.PDFDocumentProxy,
 ): Promise<void> {
   fieldNameToIds.clear();
+  fieldNameToPage.clear();
   try {
     const fieldObjects = await doc.getFieldObjects();
     if (fieldObjects) {
       for (const [name, fields] of Object.entries(fieldObjects)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fieldArr = fields as any[];
         fieldNameToIds.set(
           name,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (fields as any[]).map((f) => f.id),
+          fieldArr.map((f) => f.id),
         );
+        // Store page number (0-based in PDF.js field objects → 1-based for us)
+        const firstField = fieldArr[0];
+        if (firstField && typeof firstField.page === "number") {
+          fieldNameToPage.set(name, firstField.page + 1);
+        }
       }
     }
   } catch {
@@ -2398,7 +2653,11 @@ formLayerEl.addEventListener("input", (e) => {
       : target.value;
   formFieldValues.set(fieldName, value);
   updateAnnotationsBadge();
-  renderAnnotationPanel();
+  if (currentDisplayMode === "inline" && annotationPanelOpen) {
+    renderStrip();
+  } else {
+    renderAnnotationPanel();
+  }
   persistAnnotations();
 });
 
@@ -3112,6 +3371,10 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
     const isFullscreen = currentDisplayMode === "fullscreen";
     mainEl.classList.toggle("fullscreen", isFullscreen);
     log.info(isFullscreen ? "Fullscreen mode enabled" : "Inline mode");
+    // Switch between strip (inline) and side panel (fullscreen)
+    if (annotationPanelOpen) {
+      setAnnotationPanelOpen(true);
+    }
     // When exiting fullscreen, request resize to fit content
     if (wasFullscreen && !isFullscreen && pdfDocument) {
       requestFitToContent();
