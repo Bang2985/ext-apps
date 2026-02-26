@@ -1196,7 +1196,24 @@ function addAnnotation(cesiumViewer: any, def: AnnotationDef): void {
 
   annotationMap.set(def.id, { def, entities });
   updateCopyButton();
+  // Workaround: CesiumJS may not cluster entities until camera moves (issue #4536).
+  // Toggle clustering off/on to force a re-cluster pass.
+  scheduleRecluster();
   log.info("Added annotation", def.type, def.id);
+}
+
+let reclusterTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Debounced clustering refresh (batches rapid add/remove calls) */
+function scheduleRecluster(): void {
+  if (reclusterTimer) return; // already scheduled
+  reclusterTimer = setTimeout(() => {
+    reclusterTimer = null;
+    if (!annotationDataSource) return;
+    const c = annotationDataSource.clustering;
+    c.enabled = false;
+    c.enabled = true;
+  }, 0);
 }
 
 /**
