@@ -15,7 +15,8 @@ import {
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/spec.types.js";
 import * as pdfjsLib from "pdfjs-dist";
-import { TextLayer } from "pdfjs-dist";
+import { AnnotationLayer, TextLayer } from "pdfjs-dist";
+import "pdfjs-dist/web/pdf_viewer.css";
 import { PDFDocument, rgb, StandardFonts, degrees } from "pdf-lib";
 import "./global.css";
 import "./mcp-app.css";
@@ -140,6 +141,9 @@ interface TrackedAnnotation {
 const annotationMap = new Map<string, TrackedAnnotation>();
 const formFieldValues = new Map<string, string | boolean>();
 
+// PDF.js form field name → annotation IDs mapping (for annotationStorage)
+const fieldNameToIds = new Map<string, string[]>();
+
 // DOM Elements
 const mainEl = document.querySelector(".main") as HTMLElement;
 const loadingEl = document.getElementById("loading")!;
@@ -179,6 +183,7 @@ const searchCloseBtn = document.getElementById(
 ) as HTMLButtonElement;
 const highlightLayerEl = document.getElementById("highlight-layer")!;
 const annotationLayerEl = document.getElementById("annotation-layer")!;
+const formLayerEl = document.getElementById("form-layer") as HTMLDivElement;
 const downloadBtn = document.getElementById(
   "download-btn",
 ) as HTMLButtonElement;
@@ -1666,6 +1671,48 @@ function restoreAnnotations(): void {
 }
 
 // =============================================================================
+// PDF.js Form Field Name → ID Mapping
+// =============================================================================
+
+/** Build mapping from field names (used by fill_form) to annotation IDs (used by annotationStorage). */
+async function buildFieldNameMap(
+  doc: pdfjsLib.PDFDocumentProxy,
+): Promise<void> {
+  fieldNameToIds.clear();
+  try {
+    const fieldObjects = await doc.getFieldObjects();
+    if (fieldObjects) {
+      for (const [name, fields] of Object.entries(fieldObjects)) {
+        fieldNameToIds.set(
+          name,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (fields as any[]).map((f) => f.id),
+        );
+      }
+    }
+  } catch {
+    // getFieldObjects may fail on some PDFs — fall back to no mapping
+  }
+  log.info(`Built field name map: ${fieldNameToIds.size} fields`);
+}
+
+/** Sync formFieldValues into pdfDocument.annotationStorage so AnnotationLayer renders pre-filled values. */
+function syncFormValuesToStorage(): void {
+  if (!pdfDocument || fieldNameToIds.size === 0) return;
+  const storage = pdfDocument.annotationStorage;
+  for (const [name, value] of formFieldValues) {
+    const ids = fieldNameToIds.get(name);
+    if (ids) {
+      for (const id of ids) {
+        storage.setValue(id, {
+          value: typeof value === "boolean" ? value : String(value),
+        });
+      }
+    }
+  }
+}
+
+// =============================================================================
 // PDF Download with Annotations
 // =============================================================================
 
@@ -2059,6 +2106,49 @@ async function renderPage() {
     annotationLayerEl.style.width = `${viewport.width}px`;
     annotationLayerEl.style.height = `${viewport.height}px`;
 
+    // Render PDF.js AnnotationLayer for interactive form widgets
+    formLayerEl.innerHTML = "";
+    formLayerEl.style.width = `${viewport.width}px`;
+    formLayerEl.style.height = `${viewport.height}px`;
+    try {
+      const annotations = await page.getAnnotations();
+      if (annotations.length > 0) {
+        const linkService = {
+          getDestinationHash: () => "#",
+          getAnchorUrl: () => "#",
+          addLinkAttributes: () => {},
+          isPageVisible: () => true,
+          isPageCached: () => true,
+          externalLinkEnabled: true,
+        };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const annotationLayer = new AnnotationLayer({
+          div: formLayerEl,
+          page,
+          viewport,
+          annotationStorage: pdfDocument.annotationStorage,
+          linkService,
+          accessibilityManager: null,
+          annotationCanvasMap: null,
+          annotationEditorUIManager: null,
+          structTreeLayer: null,
+          commentManager: null,
+        } as any);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await annotationLayer.render({
+          annotations,
+          div: formLayerEl,
+          page,
+          viewport,
+          renderForms: true,
+          linkService,
+          annotationStorage: pdfDocument.annotationStorage,
+        } as any);
+      }
+    } catch (formErr) {
+      log.info("Form layer render skipped:", formErr);
+    }
+
     // Re-render search highlights if search is active
     if (searchOpen && searchQuery) {
       renderHighlights();
@@ -2194,6 +2284,20 @@ searchPrevBtn.addEventListener("click", goToPrevMatch);
 searchNextBtn.addEventListener("click", goToNextMatch);
 fullscreenBtn.addEventListener("click", toggleFullscreen);
 downloadBtn.addEventListener("click", downloadAnnotatedPdf);
+
+// Sync user form input back to formFieldValues for persistence
+formLayerEl.addEventListener("input", (e) => {
+  const target = e.target as HTMLInputElement | HTMLSelectElement;
+  const fieldName = target.name;
+  if (!fieldName) return;
+  const value =
+    target instanceof HTMLInputElement && target.type === "checkbox"
+      ? target.checked
+      : target.value;
+  formFieldValues.set(fieldName, value);
+  persistAnnotations();
+});
+
 initAnnotationPanel();
 
 // Search input events
@@ -2646,6 +2750,12 @@ app.ontoolresult = async (result: CallToolResult) => {
     downloadBtn.style.display = "";
     // Restore any persisted annotations
     restoreAnnotations();
+
+    // Build field name → annotation ID mapping for form filling
+    await buildFieldNameMap(document);
+    // Pre-populate annotationStorage from restored formFieldValues
+    syncFormValuesToStorage();
+
     autoShowAnnotationPanel();
     updateAnnotationsBadge();
     renderPage();
@@ -2772,7 +2882,23 @@ function processCommands(commands: PdfCommand[]): void {
       case "fill_form":
         for (const field of cmd.fields) {
           formFieldValues.set(field.name, field.value);
+          // Also set in PDF.js annotation storage for live rendering
+          if (pdfDocument) {
+            const ids = fieldNameToIds.get(field.name);
+            if (ids) {
+              for (const id of ids) {
+                pdfDocument.annotationStorage.setValue(id, {
+                  value:
+                    typeof field.value === "boolean"
+                      ? field.value
+                      : String(field.value),
+                });
+              }
+            }
+          }
         }
+        // Re-render to show updated form values
+        renderPage();
         break;
       case "get_pages":
         // Handle async — don't block other commands
