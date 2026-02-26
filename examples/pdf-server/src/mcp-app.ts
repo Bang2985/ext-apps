@@ -2571,18 +2571,16 @@ async function downloadAnnotatedPdf(): Promise<void> {
     const pdfBytes = await pdfDoc.save();
 
     // Use app.downloadFile if host supports it, otherwise fall back to <a> tag
-    const hasAnnotations = annotationMap.size > 0;
+    const hasEdits = annotationMap.size > 0 || formFieldValues.size > 0;
     const baseName = (pdfTitle || "document").replace(/\.pdf$/i, "");
-    const fileName = hasAnnotations
-      ? `${baseName}_annotated.pdf`
-      : `${baseName}.pdf`;
+    const fileName = hasEdits ? `${baseName} - edited.pdf` : `${baseName}.pdf`;
 
     // Convert to base64
     const base64 = uint8ArrayToBase64(pdfBytes);
 
     // TODO: Re-enable capability check when host downloadFile is fixed:
-    // if (app.getHostCapabilities()?.downloadFile) {
-    if (true) {
+    if (app.getHostCapabilities()?.downloadFile) {
+      // if (true) {
       const { isError } = await app.downloadFile({
         contents: [
           {
@@ -3422,8 +3420,10 @@ app.ontoolresult = async (result: CallToolResult) => {
 
     showViewer();
     // TODO: Re-enable capability check when host downloadFile is fixed:
-    // downloadBtn.style.display = app.getHostCapabilities()?.downloadFile ? "" : "none";
-    downloadBtn.style.display = "";
+    downloadBtn.style.display = app.getHostCapabilities()?.downloadFile
+      ? ""
+      : "none";
+    // downloadBtn.style.display = "";
     // Restore any persisted annotations
     restoreAnnotations();
 
