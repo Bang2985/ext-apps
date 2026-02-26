@@ -141,6 +141,19 @@ interface TrackedAnnotation {
 const annotationMap = new Map<string, TrackedAnnotation>();
 const formFieldValues = new Map<string, string | boolean>();
 
+// Selection & interaction state
+let selectedAnnotationId: string | null = null;
+
+// Undo/Redo
+interface EditEntry {
+  type: "update" | "add" | "remove";
+  id: string;
+  before: PdfAnnotationDef | null;
+  after: PdfAnnotationDef | null;
+}
+const undoStack: EditEntry[] = [];
+const redoStack: EditEntry[] = [];
+
 // PDF.js form field name → annotation IDs mapping (for annotationStorage)
 const fieldNameToIds = new Map<string, string[]>();
 // PDF.js form field name → page number mapping (for strip counter)
@@ -945,6 +958,381 @@ function pdfPointToScreen(
   return { left: x * s, top: viewport.height - y * s };
 }
 
+/** Convert a screen-space delta (pixels) to a PDF-space delta. */
+function screenToPdfDelta(dx: number, dy: number): { dx: number; dy: number } {
+  return { dx: dx / scale, dy: -dy / scale };
+}
+
+// =============================================================================
+// Undo / Redo
+// =============================================================================
+
+function pushEdit(entry: EditEntry): void {
+  undoStack.push(entry);
+  redoStack.length = 0;
+}
+
+function undo(): void {
+  const entry = undoStack.pop();
+  if (!entry) return;
+  redoStack.push(entry);
+  applyEdit(entry, true);
+}
+
+function redo(): void {
+  const entry = redoStack.pop();
+  if (!entry) return;
+  undoStack.push(entry);
+  applyEdit(entry, false);
+}
+
+function applyEdit(entry: EditEntry, reverse: boolean): void {
+  const state = reverse ? entry.before : entry.after;
+  if (entry.type === "add") {
+    if (reverse) {
+      removeAnnotation(entry.id, true);
+    } else {
+      addAnnotation(state!, true);
+    }
+  } else if (entry.type === "remove") {
+    if (reverse) {
+      addAnnotation(state!, true);
+    } else {
+      removeAnnotation(entry.id, true);
+    }
+  } else {
+    if (state) {
+      const tracked = annotationMap.get(entry.id);
+      if (tracked) {
+        tracked.def = { ...state };
+      } else {
+        annotationMap.set(entry.id, { def: { ...state }, elements: [] });
+      }
+    }
+    renderAnnotationsForPage(currentPage);
+    renderAnnotationPanel();
+  }
+  persistAnnotations();
+}
+
+// =============================================================================
+// Selection
+// =============================================================================
+
+function selectAnnotation(id: string | null): void {
+  const prev = selectedAnnotationId;
+  selectedAnnotationId = id;
+
+  // Remove selection visuals from previous
+  if (prev) {
+    const tracked = annotationMap.get(prev);
+    if (tracked) {
+      for (const el of tracked.elements) {
+        el.classList.remove("annotation-selected");
+      }
+    }
+    // Remove handles
+    for (const h of annotationLayerEl.querySelectorAll(
+      ".annotation-handle, .annotation-handle-rotate",
+    )) {
+      h.remove();
+    }
+  }
+
+  // Add selection visuals to new
+  if (id) {
+    const tracked = annotationMap.get(id);
+    if (tracked) {
+      for (const el of tracked.elements) {
+        el.classList.add("annotation-selected");
+      }
+      // Show handles for applicable types
+      showHandles(tracked);
+    }
+  }
+
+  // Sync sidebar
+  syncSidebarSelection();
+}
+
+function syncSidebarSelection(): void {
+  for (const card of annotationsPanelListEl.querySelectorAll(
+    ".annotation-card",
+  )) {
+    const cardId = (card as HTMLElement).dataset.annotationId;
+    card.classList.toggle("selected", cardId === selectedAnnotationId);
+  }
+}
+
+function showHandles(tracked: TrackedAnnotation): void {
+  const def = tracked.def;
+  if (def.type === "rectangle" && tracked.elements.length > 0) {
+    const el = tracked.elements[0];
+    // Make parent relative for handle positioning
+    el.style.position = "absolute";
+    for (const corner of ["nw", "ne", "sw", "se"] as const) {
+      const handle = document.createElement("div");
+      handle.className = `annotation-handle ${corner}`;
+      handle.dataset.corner = corner;
+      setupResizeHandle(handle, tracked, corner);
+      el.appendChild(handle);
+    }
+  } else if (def.type === "stamp" && tracked.elements.length > 0) {
+    const el = tracked.elements[0];
+    const handle = document.createElement("div");
+    handle.className = "annotation-handle-rotate";
+    setupRotateHandle(handle, tracked);
+    el.appendChild(handle);
+  }
+}
+
+// =============================================================================
+// Drag (move)
+// =============================================================================
+
+const DRAGGABLE_TYPES = new Set<string>([
+  "rectangle",
+  "freetext",
+  "stamp",
+  "note",
+]);
+
+function setupAnnotationInteraction(
+  el: HTMLElement,
+  tracked: TrackedAnnotation,
+): void {
+  // Click to select
+  el.addEventListener("mousedown", (e) => {
+    // Ignore if clicking on a handle
+    if (
+      (e.target as HTMLElement).classList.contains("annotation-handle") ||
+      (e.target as HTMLElement).classList.contains("annotation-handle-rotate")
+    ) {
+      return;
+    }
+    e.stopPropagation();
+    selectAnnotation(tracked.def.id);
+
+    // Start drag for draggable types
+    if (DRAGGABLE_TYPES.has(tracked.def.type)) {
+      startDrag(e, tracked);
+    }
+  });
+}
+
+function startDrag(e: MouseEvent, tracked: TrackedAnnotation): void {
+  const def = tracked.def;
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const beforeDef = { ...def } as PdfAnnotationDef;
+  let moved = false;
+
+  // Store original element positions
+  const originalPositions = tracked.elements.map((el) => ({
+    left: parseFloat(el.style.left),
+    top: parseFloat(el.style.top),
+  }));
+
+  document.body.style.cursor = "grabbing";
+  for (const el of tracked.elements) {
+    el.classList.add("annotation-dragging");
+  }
+
+  const onMouseMove = (ev: MouseEvent) => {
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+    // Move elements directly for smooth feedback
+    for (let i = 0; i < tracked.elements.length; i++) {
+      tracked.elements[i].style.left = `${originalPositions[i].left + dx}px`;
+      tracked.elements[i].style.top = `${originalPositions[i].top + dy}px`;
+    }
+  };
+
+  const onMouseUp = (ev: MouseEvent) => {
+    document.removeEventListener("mousemove", onMouseMove);
+    document.removeEventListener("mouseup", onMouseUp);
+    document.body.style.cursor = "";
+    for (const el of tracked.elements) {
+      el.classList.remove("annotation-dragging");
+    }
+
+    if (!moved) return;
+
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    const pdfDelta = screenToPdfDelta(dx, dy);
+
+    // Apply move to def
+    applyMoveToDef(
+      tracked.def as PdfAnnotationDef & { x: number; y: number },
+      pdfDelta.dx,
+      pdfDelta.dy,
+    );
+
+    const afterDef = { ...tracked.def } as PdfAnnotationDef;
+    pushEdit({
+      type: "update",
+      id: def.id,
+      before: beforeDef,
+      after: afterDef,
+    });
+    persistAnnotations();
+    // Re-render to get correct positions
+    renderAnnotationsForPage(currentPage);
+    // Re-select to show handles
+    selectAnnotation(def.id);
+  };
+
+  document.addEventListener("mousemove", onMouseMove);
+  document.addEventListener("mouseup", onMouseUp);
+}
+
+function applyMoveToDef(
+  def: PdfAnnotationDef & { x?: number; y?: number },
+  dx: number,
+  dy: number,
+): void {
+  if ("x" in def && "y" in def) {
+    def.x! += dx;
+    def.y! += dy;
+  }
+}
+
+// =============================================================================
+// Resize (rectangle only)
+// =============================================================================
+
+function setupResizeHandle(
+  handle: HTMLElement,
+  tracked: TrackedAnnotation,
+  corner: "nw" | "ne" | "sw" | "se",
+): void {
+  handle.addEventListener("mousedown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const def = tracked.def as RectangleAnnotation;
+    const beforeDef = { ...def };
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const dxScreen = ev.clientX - startX;
+      const dyScreen = ev.clientY - startY;
+      const pdfD = screenToPdfDelta(dxScreen, dyScreen);
+
+      // Reset to before state then apply delta
+      let newX = beforeDef.x;
+      let newY = beforeDef.y;
+      let newW = beforeDef.width;
+      let newH = beforeDef.height;
+
+      // In PDF coords: x goes right, y goes up
+      if (corner.includes("w")) {
+        newX += pdfD.dx;
+        newW -= pdfD.dx;
+      } else {
+        newW += pdfD.dx;
+      }
+      if (corner.includes("s")) {
+        newY += pdfD.dy;
+        newH -= pdfD.dy;
+      } else {
+        newH += pdfD.dy;
+      }
+
+      // Enforce minimum size
+      if (newW < 5) {
+        newW = 5;
+      }
+      if (newH < 5) {
+        newH = 5;
+      }
+
+      def.x = newX;
+      def.y = newY;
+      def.width = newW;
+      def.height = newH;
+
+      // Re-render for live feedback
+      renderAnnotationsForPage(currentPage);
+      selectAnnotation(def.id);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+
+      const afterDef = { ...def };
+      pushEdit({
+        type: "update",
+        id: def.id,
+        before: beforeDef,
+        after: afterDef,
+      });
+      persistAnnotations();
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+}
+
+// =============================================================================
+// Rotate (stamp only)
+// =============================================================================
+
+function setupRotateHandle(
+  handle: HTMLElement,
+  tracked: TrackedAnnotation,
+): void {
+  handle.addEventListener("mousedown", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    const def = tracked.def as StampAnnotation;
+    const beforeDef = { ...def };
+    const el = tracked.elements[0];
+    const rect = el.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const angle = Math.atan2(ev.clientY - centerY, ev.clientX - centerX);
+      // Convert to degrees, offset so 0 = pointing up
+      let degrees = (angle * 180) / Math.PI + 90;
+      // Normalize
+      if (degrees < 0) degrees += 360;
+      if (degrees > 360) degrees -= 360;
+      // Snap to 15-degree increments when close
+      const snapped = Math.round(degrees / 15) * 15;
+      if (Math.abs(degrees - snapped) < 3) degrees = snapped;
+
+      def.rotation = Math.round(degrees);
+      renderAnnotationsForPage(currentPage);
+      selectAnnotation(def.id);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+
+      const afterDef = { ...def };
+      pushEdit({
+        type: "update",
+        id: def.id,
+        before: beforeDef,
+        after: afterDef,
+      });
+      persistAnnotations();
+    };
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+  });
+}
+
 /**
  * Paint annotations for a page onto a 2D canvas context.
  * Used to include annotations in screenshots sent to the model.
@@ -1092,11 +1480,16 @@ function renderAnnotationsForPage(pageNum: number): void {
     const elements = renderAnnotation(def, vp);
     tracked.elements = elements;
     for (const el of elements) {
-      // Bidirectional link: clicking annotation on PDF highlights its card in the panel
-      if (el.classList.contains("annotation-note")) {
-        el.addEventListener("click", () => highlightAnnotationCard(def.id));
-      }
+      // Set up selection + drag/resize/rotate interactions
+      setupAnnotationInteraction(el, tracked);
       annotationLayerEl.appendChild(el);
+    }
+    // Restore selection state after re-render
+    if (selectedAnnotationId === def.id) {
+      for (const el of elements) {
+        el.classList.add("annotation-selected");
+      }
+      showHandles(tracked);
     }
   }
 
@@ -1253,10 +1646,13 @@ function renderStampAnnotation(
 // Annotation CRUD
 // =============================================================================
 
-function addAnnotation(def: PdfAnnotationDef): void {
-  // Remove existing if same id
-  removeAnnotation(def.id);
+function addAnnotation(def: PdfAnnotationDef, skipUndo = false): void {
+  // Remove existing if same id (without pushing to undo)
+  removeAnnotation(def.id, true);
   annotationMap.set(def.id, { def, elements: [] });
+  if (!skipUndo) {
+    pushEdit({ type: "add", id: def.id, before: null, after: { ...def } });
+  }
   // Re-render if on current page
   if (def.page === currentPage) {
     renderAnnotationsForPage(currentPage);
@@ -1268,13 +1664,20 @@ function addAnnotation(def: PdfAnnotationDef): void {
 
 function updateAnnotation(
   update: Partial<PdfAnnotationDef> & { id: string; type: string },
+  skipUndo = false,
 ): void {
   const tracked = annotationMap.get(update.id);
   if (!tracked) return;
 
+  const before = { ...tracked.def } as PdfAnnotationDef;
+
   // Merge partial update into existing def
   const merged = { ...tracked.def, ...update } as PdfAnnotationDef;
   tracked.def = merged;
+
+  if (!skipUndo) {
+    pushEdit({ type: "update", id: update.id, before, after: { ...merged } });
+  }
 
   // Re-render if on current page
   if (merged.page === currentPage) {
@@ -1283,11 +1686,17 @@ function updateAnnotation(
   renderAnnotationPanel();
 }
 
-function removeAnnotation(id: string): void {
+function removeAnnotation(id: string, skipUndo = false): void {
   const tracked = annotationMap.get(id);
   if (!tracked) return;
+  if (!skipUndo) {
+    pushEdit({ type: "remove", id, before: { ...tracked.def }, after: null });
+  }
   for (const el of tracked.elements) el.remove();
   annotationMap.delete(id);
+  if (selectedAnnotationId === id) {
+    selectedAnnotationId = null;
+  }
   updateAnnotationsBadge();
   renderAnnotationPanel();
 }
@@ -1580,7 +1989,9 @@ function renderAnnotationPanel(): void {
     for (const tracked of byPage.get(pageNum)!) {
       const def = tracked.def;
       const card = document.createElement("div");
-      card.className = "annotation-card";
+      card.className =
+        "annotation-card" +
+        (selectedAnnotationId === def.id ? " selected" : "");
       card.dataset.annotationId = def.id;
 
       const row = document.createElement("div");
@@ -1638,7 +2049,7 @@ function renderAnnotationPanel(): void {
         card.appendChild(contentEl);
       }
 
-      // Click handler: expand/collapse + navigate to page + pulse annotation
+      // Click handler: select + expand/collapse + navigate to page + pulse annotation
       card.addEventListener("click", () => {
         if (hasContent) {
           card.classList.toggle("expanded");
@@ -1646,9 +2057,13 @@ function renderAnnotationPanel(): void {
         // Navigate to page if needed
         if (def.page !== currentPage) {
           goToPage(def.page);
-          // Wait for render then pulse
-          setTimeout(() => pulseAnnotation(def.id), 300);
+          // Wait for render then select + pulse
+          setTimeout(() => {
+            selectAnnotation(def.id);
+            pulseAnnotation(def.id);
+          }, 300);
         } else {
+          selectAnnotation(def.id);
           pulseAnnotation(def.id);
         }
       });
@@ -1746,37 +2161,6 @@ function pulseAnnotation(id: string): void {
       },
       { once: true },
     );
-  }
-}
-
-function highlightAnnotationCard(id: string): void {
-  // Open panel if closed
-  if (!annotationPanelOpen) {
-    // Only auto-open if user hasn't explicitly closed
-    if (annotationPanelUserPref !== false) {
-      setAnnotationPanelOpen(true);
-    } else {
-      return;
-    }
-  }
-
-  // Clear existing highlights
-  for (const card of annotationsPanelListEl.querySelectorAll(
-    ".annotation-card.highlighted",
-  )) {
-    card.classList.remove("highlighted");
-  }
-
-  // Find and highlight the card
-  const card = annotationsPanelListEl.querySelector(
-    `[data-annotation-id="${id}"]`,
-  ) as HTMLElement | null;
-  if (card) {
-    card.classList.add("highlighted");
-    card.classList.add("expanded");
-    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    // Remove highlight after a delay
-    setTimeout(() => card.classList.remove("highlighted"), 2000);
   }
 }
 
@@ -2897,6 +3281,7 @@ function loadSavedPage(): number | null {
 function goToPage(page: number) {
   const targetPage = Math.max(1, Math.min(page, totalPages));
   if (targetPage !== currentPage) {
+    selectAnnotation(null);
     preloadPaused = true;
     currentPage = targetPage;
     saveCurrentPage();
@@ -3044,8 +3429,58 @@ pageInputEl.addEventListener("keydown", (e) => {
   }
 });
 
+// Click on empty area to deselect annotations
+canvasContainerEl.addEventListener("mousedown", (e) => {
+  // Only deselect if clicking directly on the container or page wrapper, not on an annotation
+  if (
+    e.target === canvasContainerEl ||
+    e.target === canvasEl ||
+    (e.target as HTMLElement).classList?.contains("page-wrapper")
+  ) {
+    if (selectedAnnotationId) {
+      selectAnnotation(null);
+    }
+  }
+});
+
 // Keyboard navigation
 document.addEventListener("keydown", (e) => {
+  // Delete/Backspace to delete selected annotation
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedAnnotationId) {
+    // Don't delete if user is typing in an input
+    if (
+      document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement ||
+      document.activeElement instanceof HTMLSelectElement
+    ) {
+      return;
+    }
+    e.preventDefault();
+    const id = selectedAnnotationId;
+    selectAnnotation(null);
+    removeAnnotation(id);
+    persistAnnotations();
+    return;
+  }
+
+  // Ctrl/Cmd+Z: undo, Ctrl/Cmd+Shift+Z: redo
+  if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+    // Don't intercept when typing in inputs
+    if (
+      document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+    e.preventDefault();
+    if (e.shiftKey) {
+      redo();
+    } else {
+      undo();
+    }
+    return;
+  }
+
   // Ctrl/Cmd+F: open our search if closed; if already focused, pass through to browser find
   if ((e.ctrlKey || e.metaKey) && e.key === "f") {
     if (!searchOpen) {
@@ -3082,7 +3517,10 @@ document.addEventListener("keydown", (e) => {
 
   switch (e.key) {
     case "Escape":
-      if (searchOpen) {
+      if (selectedAnnotationId) {
+        selectAnnotation(null);
+        e.preventDefault();
+      } else if (searchOpen) {
         closeSearch();
         e.preventDefault();
       } else if (currentDisplayMode === "fullscreen") {

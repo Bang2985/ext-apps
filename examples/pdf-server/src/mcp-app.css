@@ -429,17 +429,23 @@ body {
   background: rgba(255, 255, 0, 0.35);
   mix-blend-mode: multiply;
   border-radius: 1px;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .annotation-underline {
   position: absolute;
   border-bottom: 2px solid #ff0000;
   box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .annotation-strikethrough {
   position: absolute;
   box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
 }
 .annotation-strikethrough::after {
   content: "";
@@ -492,13 +498,16 @@ body {
   position: absolute;
   border: 2px solid #0066cc;
   box-sizing: border-box;
+  pointer-events: auto;
+  cursor: grab;
 }
 
 .annotation-freetext {
   position: absolute;
   font-family: Helvetica, Arial, sans-serif;
   white-space: pre-wrap;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: grab;
 }
 
 .annotation-stamp {
@@ -511,7 +520,54 @@ body {
   opacity: 0.6;
   text-transform: uppercase;
   white-space: nowrap;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+/* Selection visuals */
+.annotation-selected {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+  z-index: 10;
+}
+
+.annotation-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: white;
+  border: 2px solid var(--accent, #2563eb);
+  border-radius: 50%;
+  z-index: 11;
+  pointer-events: auto;
+}
+.annotation-handle.nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.annotation-handle.ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.annotation-handle.sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.annotation-handle.se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+
+.annotation-handle-rotate {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  background: white;
+  border: 2px solid var(--accent, #2563eb);
+  border-radius: 50%;
+  z-index: 11;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.annotation-card.selected {
+  background: var(--accent-bg, rgba(37, 99, 235, 0.08));
+  border-left-color: var(--accent, #2563eb);
+}
+
+.annotation-dragging {
+  cursor: grabbing !important;
 }
 
 @media (prefers-color-scheme: dark) {
