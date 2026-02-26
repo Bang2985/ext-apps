@@ -613,7 +613,20 @@ body {
   z-index: 4; /* above annotation-layer (z-index: 3) so form inputs are clickable */
 }
 
-/* Style PDF.js form widgets — avoid overriding font-size (set by AnnotationLayer) */
+/*
+ * Style PDF.js form widgets.
+ * PDF.js AnnotationLayer renders interactive form inputs on top of the canvas,
+ * with a semi-transparent blue tint so the PDF's static appearance bleeds through.
+ * This causes a "double text" effect because the widget font (9px * scale, sans-serif)
+ * doesn't match the PDF's actual font metrics at every zoom level.
+ * Fix: make widgets opaque so only the interactive layer's text is visible.
+ */
+#form-layer .textWidgetAnnotation :is(input, textarea),
+#form-layer .choiceWidgetAnnotation select {
+  background-image: none;
+  background-color: light-dark(#fff, #2a2a2a);
+}
+
 #form-layer select option:checked {
   background: light-dark(#d0e0ff, #335);
 }
