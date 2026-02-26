@@ -1359,6 +1359,12 @@ app.ontoolresult = async (result) => {
     );
   }
 
+  // Ensure all current markers are persisted (initial markers from ontoolinput
+  // were added before viewUUID was set, so persistMarkers() was a no-op then)
+  if (viewUUID && markerMap.size > 0) {
+    persistMarkers();
+  }
+
   // Start polling for commands now that we have viewUUID
   if (viewUUID) {
     startPolling();
