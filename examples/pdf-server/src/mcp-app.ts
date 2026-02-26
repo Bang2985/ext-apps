@@ -183,6 +183,29 @@ const downloadBtn = document.getElementById(
   "download-btn",
 ) as HTMLButtonElement;
 
+// Annotation Panel DOM Elements
+const annotationsPanelEl = document.getElementById("annotation-panel")!;
+const annotationsPanelListEl = document.getElementById(
+  "annotation-panel-list",
+)!;
+const annotationsPanelCountEl = document.getElementById(
+  "annotation-panel-count",
+)!;
+const annotationsPanelCloseBtn = document.getElementById(
+  "annotation-panel-close",
+) as HTMLButtonElement;
+const annotationsBtn = document.getElementById(
+  "annotations-btn",
+) as HTMLButtonElement;
+const annotationsBadgeEl = document.getElementById(
+  "annotations-badge",
+) as HTMLElement;
+
+// Annotation panel state
+let annotationPanelOpen = false;
+/** null = user hasn't manually toggled; true/false = manual preference */
+let annotationPanelUserPref: boolean | null = null;
+
 // Search state
 interface SearchMatch {
   pageNum: number;
@@ -865,9 +888,16 @@ function renderAnnotationsForPage(pageNum: number): void {
     const elements = renderAnnotation(def, vp);
     tracked.elements = elements;
     for (const el of elements) {
+      // Bidirectional link: clicking annotation on PDF highlights its card in the panel
+      if (el.classList.contains("annotation-note")) {
+        el.addEventListener("click", () => highlightAnnotationCard(def.id));
+      }
       annotationLayerEl.appendChild(el);
     }
   }
+
+  // Refresh panel to update current-page highlighting
+  renderAnnotationPanel();
 }
 
 function renderAnnotation(
@@ -1027,6 +1057,9 @@ function addAnnotation(def: PdfAnnotationDef): void {
   if (def.page === currentPage) {
     renderAnnotationsForPage(currentPage);
   }
+  autoShowAnnotationPanel();
+  updateAnnotationsBadge();
+  renderAnnotationPanel();
 }
 
 function updateAnnotation(
@@ -1043,6 +1076,7 @@ function updateAnnotation(
   if (merged.page === currentPage) {
     renderAnnotationsForPage(currentPage);
   }
+  renderAnnotationPanel();
 }
 
 function removeAnnotation(id: string): void {
@@ -1050,6 +1084,273 @@ function removeAnnotation(id: string): void {
   if (!tracked) return;
   for (const el of tracked.elements) el.remove();
   annotationMap.delete(id);
+  updateAnnotationsBadge();
+  renderAnnotationPanel();
+}
+
+// =============================================================================
+// Annotation Panel
+// =============================================================================
+
+function setAnnotationPanelOpen(open: boolean): void {
+  annotationPanelOpen = open;
+  annotationsPanelEl.style.display = open ? "" : "none";
+  annotationsBtn.classList.toggle("active", open);
+  updateAnnotationsBadge();
+  if (open) {
+    renderAnnotationPanel();
+  }
+}
+
+function toggleAnnotationPanel(): void {
+  annotationPanelUserPref = !annotationPanelOpen;
+  try {
+    localStorage.setItem(
+      "pdf-annotation-panel",
+      annotationPanelUserPref ? "open" : "closed",
+    );
+  } catch {
+    /* ignore */
+  }
+  setAnnotationPanelOpen(annotationPanelUserPref);
+}
+
+function autoShowAnnotationPanel(): void {
+  // Only auto-show if user hasn't explicitly closed it
+  if (annotationPanelUserPref === false) return;
+  if (!annotationPanelOpen && annotationMap.size > 0) {
+    setAnnotationPanelOpen(true);
+  }
+}
+
+function updateAnnotationsBadge(): void {
+  const count = annotationMap.size;
+  if (count > 0 && !annotationPanelOpen) {
+    annotationsBadgeEl.textContent = String(count);
+    annotationsBadgeEl.style.display = "";
+  } else {
+    annotationsBadgeEl.style.display = "none";
+  }
+  // Show/hide the toolbar button based on whether annotations exist
+  annotationsBtn.style.display = count > 0 ? "" : "none";
+}
+
+function getAnnotationPreview(def: PdfAnnotationDef): string {
+  switch (def.type) {
+    case "note":
+    case "freetext":
+      return def.content || "";
+    case "highlight":
+      return def.content || "Highlight";
+    case "underline":
+      return "Underline";
+    case "strikethrough":
+      return "Strikethrough";
+    case "rectangle":
+      return "Rectangle";
+    case "stamp":
+      return def.label;
+  }
+}
+
+function getAnnotationColor(def: PdfAnnotationDef): string {
+  if ("color" in def && def.color) return def.color;
+  switch (def.type) {
+    case "highlight":
+      return "rgba(255, 255, 0, 0.7)";
+    case "underline":
+      return "#ff0000";
+    case "strikethrough":
+      return "#ff0000";
+    case "note":
+      return "#f5a623";
+    case "rectangle":
+      return "#0066cc";
+    case "freetext":
+      return "#333";
+    case "stamp":
+      return "#cc0000";
+  }
+}
+
+function getAnnotationY(def: PdfAnnotationDef): number {
+  if ("y" in def && typeof def.y === "number") return def.y;
+  if ("rects" in def && def.rects.length > 0) return def.rects[0].y;
+  return 0;
+}
+
+function renderAnnotationPanel(): void {
+  if (!annotationPanelOpen) return;
+
+  annotationsPanelCountEl.textContent = String(annotationMap.size);
+
+  // Group annotations by page, sorted by Y position within each page
+  const byPage = new Map<number, TrackedAnnotation[]>();
+  for (const tracked of annotationMap.values()) {
+    const page = tracked.def.page;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page)!.push(tracked);
+  }
+
+  // Sort pages
+  const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
+
+  // Sort annotations within each page by Y position (descending = top-first in PDF coords)
+  for (const annotations of byPage.values()) {
+    annotations.sort((a, b) => getAnnotationY(b.def) - getAnnotationY(a.def));
+  }
+
+  annotationsPanelListEl.innerHTML = "";
+
+  for (const pageNum of sortedPages) {
+    // Page group header
+    const header = document.createElement("div");
+    header.className =
+      "annotation-page-group" +
+      (pageNum === currentPage ? " current-page" : "");
+    header.textContent = `Page ${pageNum}`;
+    annotationsPanelListEl.appendChild(header);
+
+    for (const tracked of byPage.get(pageNum)!) {
+      const def = tracked.def;
+      const card = document.createElement("div");
+      card.className = "annotation-card";
+      card.dataset.annotationId = def.id;
+
+      const row = document.createElement("div");
+      row.className = "annotation-card-row";
+
+      // Color swatch
+      const swatch = document.createElement("div");
+      swatch.className = "annotation-card-swatch";
+      swatch.style.background = getAnnotationColor(def);
+      row.appendChild(swatch);
+
+      // Type label
+      const typeLabel = document.createElement("span");
+      typeLabel.className = "annotation-card-type";
+      typeLabel.textContent = def.type;
+      row.appendChild(typeLabel);
+
+      // Preview text
+      const preview = getAnnotationPreview(def);
+      if (preview) {
+        const previewEl = document.createElement("span");
+        previewEl.className = "annotation-card-preview";
+        previewEl.textContent = preview;
+        row.appendChild(previewEl);
+      }
+
+      // Expand chevron (only for annotations with content)
+      const hasContent = "content" in def && def.content;
+      if (hasContent) {
+        const expand = document.createElement("span");
+        expand.className = "annotation-card-expand";
+        expand.textContent = "▼";
+        row.appendChild(expand);
+      }
+
+      card.appendChild(row);
+
+      // Expandable content area
+      if (hasContent) {
+        const contentEl = document.createElement("div");
+        contentEl.className = "annotation-card-content";
+        contentEl.textContent = (def as { content: string }).content;
+        card.appendChild(contentEl);
+      }
+
+      // Click handler: expand/collapse + navigate to page + pulse annotation
+      card.addEventListener("click", () => {
+        if (hasContent) {
+          card.classList.toggle("expanded");
+        }
+        // Navigate to page if needed
+        if (def.page !== currentPage) {
+          goToPage(def.page);
+          // Wait for render then pulse
+          setTimeout(() => pulseAnnotation(def.id), 300);
+        } else {
+          pulseAnnotation(def.id);
+        }
+      });
+
+      // Hover handler: pulse annotation on PDF
+      card.addEventListener("mouseenter", () => {
+        if (def.page === currentPage) {
+          pulseAnnotation(def.id);
+        }
+      });
+
+      annotationsPanelListEl.appendChild(card);
+    }
+  }
+}
+
+function pulseAnnotation(id: string): void {
+  const tracked = annotationMap.get(id);
+  if (!tracked) return;
+  for (const el of tracked.elements) {
+    el.classList.remove("annotation-pulse");
+    // Force reflow to restart animation
+    void el.offsetWidth;
+    el.classList.add("annotation-pulse");
+    el.addEventListener(
+      "animationend",
+      () => {
+        el.classList.remove("annotation-pulse");
+      },
+      { once: true },
+    );
+  }
+}
+
+function highlightAnnotationCard(id: string): void {
+  // Open panel if closed
+  if (!annotationPanelOpen) {
+    // Only auto-open if user hasn't explicitly closed
+    if (annotationPanelUserPref !== false) {
+      setAnnotationPanelOpen(true);
+    } else {
+      return;
+    }
+  }
+
+  // Clear existing highlights
+  for (const card of annotationsPanelListEl.querySelectorAll(
+    ".annotation-card.highlighted",
+  )) {
+    card.classList.remove("highlighted");
+  }
+
+  // Find and highlight the card
+  const card = annotationsPanelListEl.querySelector(
+    `[data-annotation-id="${id}"]`,
+  ) as HTMLElement | null;
+  if (card) {
+    card.classList.add("highlighted");
+    card.classList.add("expanded");
+    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    // Remove highlight after a delay
+    setTimeout(() => card.classList.remove("highlighted"), 2000);
+  }
+}
+
+function initAnnotationPanel(): void {
+  // Restore user preference
+  try {
+    const pref = localStorage.getItem("pdf-annotation-panel");
+    if (pref === "open") annotationPanelUserPref = true;
+    else if (pref === "closed") annotationPanelUserPref = false;
+  } catch {
+    /* ignore */
+  }
+
+  // Toggle button
+  annotationsBtn.addEventListener("click", toggleAnnotationPanel);
+  annotationsPanelCloseBtn.addEventListener("click", toggleAnnotationPanel);
+
+  updateAnnotationsBadge();
 }
 
 // =============================================================================
@@ -1893,6 +2194,7 @@ searchPrevBtn.addEventListener("click", goToPrevMatch);
 searchNextBtn.addEventListener("click", goToNextMatch);
 fullscreenBtn.addEventListener("click", toggleFullscreen);
 downloadBtn.addEventListener("click", downloadAnnotatedPdf);
+initAnnotationPanel();
 
 // Search input events
 searchInputEl.addEventListener("input", () => {
@@ -2344,6 +2646,8 @@ app.ontoolresult = async (result: CallToolResult) => {
     downloadBtn.style.display = "";
     // Restore any persisted annotations
     restoreAnnotations();
+    autoShowAnnotationPanel();
+    updateAnnotationsBadge();
     renderPage();
     // Start background preloading of all pages for text extraction
     startPreloading();
@@ -2570,4 +2874,6 @@ app.connect().then(() => {
   }
   // Restore annotations early using toolInfo.id (available before tool result)
   restoreAnnotations();
+  autoShowAnnotationPanel();
+  updateAnnotationsBadge();
 });
