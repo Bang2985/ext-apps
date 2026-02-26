@@ -1510,6 +1510,22 @@ app.ontoolinputpartial = (params) => {
   const safe = args.annotations.slice(0, -1);
   for (const ann of safe) {
     if (!ann.id || !ann.type) continue;
+    // Validate required fields per type to avoid creating broken entities
+    if (
+      ann.type === "marker" &&
+      (ann.latitude == null || ann.longitude == null)
+    )
+      continue;
+    if (
+      ann.type === "circle" &&
+      (ann.latitude == null || ann.longitude == null || ann.radiusKm == null)
+    )
+      continue;
+    if (
+      (ann.type === "route" || ann.type === "area") &&
+      (!ann.points || ann.points.length === 0)
+    )
+      continue;
     // Idempotent upsert: addAnnotation already handles existing IDs
     addAnnotation(viewer, ann);
   }
@@ -1559,15 +1575,9 @@ app.ontoolinput = async (params) => {
       hasReceivedToolInput = true;
       log.info("Positioning camera to bbox:", bbox);
       setViewToBoundingBox(viewer, bbox);
-      await waitForTilesLoaded(viewer);
-      hideLoading();
-      log.info(
-        "Camera positioned, tiles loaded. Height:",
-        viewer.camera.positionCartographic.height,
-      );
     }
 
-    // Add initial annotations from tool input
+    // Add annotations immediately (before waiting for tiles so they appear ASAP)
     if (args.annotations && args.annotations.length > 0) {
       for (const ann of args.annotations) {
         addAnnotation(viewer, ann);
@@ -1576,6 +1586,15 @@ app.ontoolinput = async (params) => {
         "Added",
         args.annotations.length,
         "initial annotation(s) from tool input",
+      );
+    }
+
+    if (bbox) {
+      await waitForTilesLoaded(viewer);
+      hideLoading();
+      log.info(
+        "Camera positioned, tiles loaded. Height:",
+        viewer.camera.positionCartographic.height,
       );
     }
   }
