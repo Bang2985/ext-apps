@@ -159,7 +159,7 @@ const redoStack: EditEntry[] = [];
 
 // PDF.js form field name → annotation IDs mapping (for annotationStorage)
 const fieldNameToIds = new Map<string, string[]>();
-// PDF.js form field name → page number mapping (for strip counter)
+// PDF.js form field name → page number mapping
 const fieldNameToPage = new Map<string, number>();
 // PDF.js form field name → human-readable label (from PDF TU / alternativeText)
 const fieldNameToLabel = new Map<string, string>();
@@ -234,31 +234,6 @@ const annotationsBadgeEl = document.getElementById(
   "annotations-badge",
 ) as HTMLElement;
 
-// Annotation Strip DOM Elements (inline mode)
-const stripEl = document.getElementById("annotation-strip")!;
-const stripItemEl = document.getElementById("strip-item")!;
-const stripCounterEl = document.getElementById("strip-counter")!;
-const stripPrevBtn = document.getElementById("strip-prev") as HTMLButtonElement;
-const stripNextBtn = document.getElementById("strip-next") as HTMLButtonElement;
-const stripDeleteBtn = document.getElementById(
-  "strip-delete",
-) as HTMLButtonElement;
-const stripClearAllBtn = document.getElementById(
-  "strip-clear-all",
-) as HTMLButtonElement;
-
-// Annotation strip state
-interface StripItem {
-  kind: "annotation" | "formField";
-  page: number;
-  id: string; // annotation id or field name
-  label: string; // type or field name
-  preview: string; // content preview or value
-  color: string; // swatch color
-}
-let stripIndex = 0;
-let stripItems: StripItem[] = [];
-
 // Annotation panel state
 let annotationPanelOpen = false;
 /** null = user hasn't manually toggled; true/false = manual preference */
@@ -323,20 +298,13 @@ function requestFitToContent() {
   const paddingBottom = parseFloat(containerStyle.paddingBottom);
 
   // Calculate required height:
-  // toolbar + padding-top + page-wrapper height + padding-bottom + strip + buffer
+  // toolbar + padding-top + page-wrapper height + padding-bottom + buffer
   // Note: search bar is absolutely positioned over the document area, so excluded
   const toolbarHeight = toolbarEl.offsetHeight;
   const pageWrapperHeight = pageWrapperEl.offsetHeight;
-  const stripHeight =
-    stripEl.style.display !== "none" ? stripEl.offsetHeight : 0;
   const BUFFER = 10; // Buffer for sub-pixel rounding and browser quirks
   const totalHeight =
-    toolbarHeight +
-    paddingTop +
-    pageWrapperHeight +
-    paddingBottom +
-    stripHeight +
-    BUFFER;
+    toolbarHeight + paddingTop + pageWrapperHeight + paddingBottom + BUFFER;
 
   // In inline mode (this function early-returns for fullscreen) the side panel is hidden
   const totalWidth = pageWrapperEl.offsetWidth + BUFFER;
@@ -1764,10 +1732,6 @@ function setAnnotationPanelOpen(open: boolean): void {
   annotationsBtn.classList.toggle("active", open);
   updateAnnotationsBadge();
 
-  // Always hide the legacy strip
-  stripEl.style.display = "none";
-  updateSearchBarOffset();
-
   if (currentDisplayMode === "inline") {
     // Inline mode: floating panel over the canvas area
     annotationsPanelEl.classList.toggle("floating", true);
@@ -1900,108 +1864,6 @@ function getAnnotationY(def: PdfAnnotationDef): number {
   if ("y" in def && typeof def.y === "number") return def.y;
   if ("rects" in def && def.rects.length > 0) return def.rects[0].y;
   return 0;
-}
-
-// =============================================================================
-// Annotation Strip (inline mode compact bottom bar)
-// =============================================================================
-
-function buildStripItems(): StripItem[] {
-  const items: StripItem[] = [];
-
-  // Annotations grouped by page
-  const byPage = new Map<number, TrackedAnnotation[]>();
-  for (const tracked of annotationMap.values()) {
-    const page = tracked.def.page;
-    if (!byPage.has(page)) byPage.set(page, []);
-    byPage.get(page)!.push(tracked);
-  }
-  const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
-  for (const pageNum of sortedPages) {
-    const annotations = byPage.get(pageNum)!;
-    annotations.sort((a, b) => getAnnotationY(b.def) - getAnnotationY(a.def));
-    for (const tracked of annotations) {
-      items.push({
-        kind: "annotation",
-        page: pageNum,
-        id: tracked.def.id,
-        label: getAnnotationLabel(tracked.def),
-        preview: getAnnotationPreview(tracked.def),
-        color: getAnnotationColor(tracked.def),
-      });
-    }
-  }
-
-  // Form fields sorted by intrinsic PDF order (page, then top-to-bottom)
-  const formEntries = [...formFieldValues.entries()].sort((a, b) => {
-    const oa = fieldNameToOrder.get(a[0]) ?? Infinity;
-    const ob = fieldNameToOrder.get(b[0]) ?? Infinity;
-    return oa - ob;
-  });
-  for (const [name, value] of formEntries) {
-    items.push({
-      kind: "formField",
-      page: fieldNameToPage.get(name) ?? 1,
-      id: name,
-      label: getFormFieldLabel(name),
-      preview:
-        typeof value === "boolean" ? (value ? "checked" : "unchecked") : value,
-      color: "#4a90d9",
-    });
-  }
-
-  return items;
-}
-
-function updateSearchBarOffset(): void {
-  // Search bar is absolutely positioned; adjust its top to account for strip
-  const stripHeight =
-    stripEl.style.display !== "none" ? stripEl.offsetHeight : 0;
-  searchBarEl.style.top = `${47 + stripHeight}px`;
-}
-
-function renderStrip(): void {
-  stripItems = buildStripItems();
-  if (stripItems.length === 0) {
-    stripEl.style.display = "none";
-    updateSearchBarOffset();
-    requestFitToContent();
-    return;
-  }
-
-  stripEl.style.display = "";
-  stripIndex = Math.min(stripIndex, stripItems.length - 1);
-  if (stripIndex < 0) stripIndex = 0;
-  const item = stripItems[stripIndex];
-
-  // Render item content
-  stripItemEl.innerHTML = "";
-  const swatch = document.createElement("div");
-  swatch.className = "annotation-card-swatch";
-  swatch.style.background = item.color;
-  stripItemEl.appendChild(swatch);
-
-  const label = document.createElement("span");
-  label.className = "annotation-card-type";
-  label.textContent = item.label;
-  stripItemEl.appendChild(label);
-
-  if (item.preview) {
-    const preview = document.createElement("span");
-    preview.className = "annotation-card-preview";
-    preview.textContent = item.preview;
-    stripItemEl.appendChild(preview);
-  }
-
-  // Counter: "3 of 7 · Page 2"
-  stripCounterEl.textContent = `${stripIndex + 1} of ${stripItems.length} · Page ${item.page}`;
-
-  // Enable/disable arrows
-  stripPrevBtn.disabled = stripIndex <= 0;
-  stripNextBtn.disabled = stripIndex >= stripItems.length - 1;
-
-  updateSearchBarOffset();
-  requestFitToContent();
 }
 
 /** Track which accordion section is open (e.g. "page-3" or "formFields"). */
@@ -2398,73 +2260,7 @@ function initAnnotationPanel(): void {
   annotationsPanelCloseBtn.addEventListener("click", toggleAnnotationPanel);
   annotationsPanelClearAllBtn.addEventListener("click", clearAllItems);
 
-  // Strip navigation
-  stripPrevBtn.addEventListener("click", () => {
-    if (stripIndex > 0) {
-      stripIndex--;
-      renderStrip();
-      navigateToStripItem(stripItems[stripIndex]);
-    }
-  });
-  stripNextBtn.addEventListener("click", () => {
-    if (stripIndex < stripItems.length - 1) {
-      stripIndex++;
-      renderStrip();
-      navigateToStripItem(stripItems[stripIndex]);
-    }
-  });
-  stripItemEl.addEventListener("click", () => {
-    if (stripItems.length > 0) {
-      navigateToStripItem(stripItems[stripIndex]);
-    }
-  });
-  stripDeleteBtn.addEventListener("click", () => {
-    if (stripItems.length === 0) return;
-    const item = stripItems[stripIndex];
-    deleteStripItem(item);
-  });
-  stripClearAllBtn.addEventListener("click", () => {
-    clearAllItems();
-  });
-
   updateAnnotationsBadge();
-}
-
-function navigateToStripItem(item: StripItem): void {
-  if (item.page !== currentPage) {
-    goToPage(item.page);
-    if (item.kind === "annotation") {
-      setTimeout(() => pulseAnnotation(item.id), 300);
-    }
-  } else if (item.kind === "annotation") {
-    pulseAnnotation(item.id);
-  }
-}
-
-function deleteStripItem(item: StripItem): void {
-  if (item.kind === "annotation") {
-    removeAnnotation(item.id);
-  } else {
-    formFieldValues.delete(item.id);
-    if (pdfDocument) {
-      const ids = fieldNameToIds.get(item.id);
-      if (ids) {
-        for (const id of ids) {
-          pdfDocument.annotationStorage.remove(id);
-        }
-      }
-    }
-    updateAnnotationsBadge();
-    renderPage();
-  }
-  persistAnnotations();
-  if (annotationPanelOpen) {
-    if (currentDisplayMode === "inline") {
-      renderStrip();
-    } else {
-      renderAnnotationPanel();
-    }
-  }
 }
 
 function clearAllItems(): void {
@@ -2490,11 +2286,7 @@ function clearAllItems(): void {
   updateAnnotationsBadge();
   persistAnnotations();
   renderPage();
-  if (currentDisplayMode === "inline") {
-    renderStrip();
-  } else {
-    renderAnnotationPanel();
-  }
+  renderAnnotationPanel();
 }
 
 // =============================================================================
@@ -3537,15 +3329,11 @@ formLayerEl.addEventListener("input", (e) => {
       : target.value;
   formFieldValues.set(fieldName, value);
   updateAnnotationsBadge();
-  if (currentDisplayMode === "inline" && annotationPanelOpen) {
-    renderStrip();
-  } else {
-    renderAnnotationPanel();
-  }
+  renderAnnotationPanel();
   persistAnnotations();
 });
 
-// Track form field focus to sync the strip and model context
+// Track form field focus to sync model context
 formLayerEl.addEventListener(
   "focusin",
   (e) => {
@@ -3554,15 +3342,6 @@ formLayerEl.addEventListener(
     if (!fieldName) return;
     focusedFieldName = fieldName;
     updatePageContext();
-    if (currentDisplayMode !== "inline" || !annotationPanelOpen) return;
-    // Find the strip item index for this field
-    const idx = stripItems.findIndex(
-      (item) => item.kind === "formField" && item.id === fieldName,
-    );
-    if (idx >= 0 && idx !== stripIndex) {
-      stripIndex = idx;
-      renderStrip();
-    }
   },
   true,
 );
@@ -4346,7 +4125,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
     const isFullscreen = currentDisplayMode === "fullscreen";
     mainEl.classList.toggle("fullscreen", isFullscreen);
     log.info(isFullscreen ? "Fullscreen mode enabled" : "Inline mode");
-    // Switch between strip (inline) and side panel (fullscreen)
+    // Re-apply panel layout for new display mode
     if (annotationPanelOpen) {
       setAnnotationPanelOpen(true);
     }
