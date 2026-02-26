@@ -756,6 +756,25 @@ body {
   text-overflow: ellipsis;
 }
 
+.annotation-card-delete {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text200);
+  opacity: 0;
+  transition: opacity 0.1s ease, color 0.1s ease;
+  display: flex;
+  align-items: center;
+}
+.annotation-card:hover .annotation-card-delete {
+  opacity: 1;
+}
+.annotation-card-delete:hover {
+  color: #d32f2f;
+}
+
 .annotation-card-expand {
   flex-shrink: 0;
   font-size: 0.65rem;

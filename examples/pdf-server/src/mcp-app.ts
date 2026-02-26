@@ -1246,6 +1246,18 @@ function renderAnnotationPanel(): void {
         row.appendChild(previewEl);
       }
 
+      // Delete button
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "annotation-card-delete";
+      deleteBtn.title = "Delete annotation";
+      deleteBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3h8M4.5 3V2a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v1M5 5.5v3M7 5.5v3M3 3l.5 7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L9 3"/></svg>`;
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeAnnotation(def.id);
+        persistAnnotations();
+      });
+      row.appendChild(deleteBtn);
+
       // Expand chevron (only for annotations with content)
       const hasContent = "content" in def && def.content;
       if (hasContent) {
