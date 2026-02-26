@@ -278,7 +278,11 @@ function requestFitToContent() {
   const totalHeight =
     toolbarHeight + paddingTop + pageWrapperHeight + paddingBottom + BUFFER;
 
-  app.sendSizeChanged({ height: totalHeight });
+  // Include annotation panel width if open
+  const panelWidth = annotationPanelOpen ? annotationsPanelEl.offsetWidth : 0;
+  const totalWidth = pageWrapperEl.offsetWidth + panelWidth + BUFFER;
+
+  app.sendSizeChanged({ width: totalWidth, height: totalHeight });
 }
 
 // --- Search Functions ---
@@ -1105,6 +1109,7 @@ function setAnnotationPanelOpen(open: boolean): void {
   if (open) {
     renderAnnotationPanel();
   }
+  requestFitToContent();
 }
 
 function toggleAnnotationPanel(): void {
@@ -1123,20 +1128,25 @@ function toggleAnnotationPanel(): void {
 function autoShowAnnotationPanel(): void {
   // Only auto-show if user hasn't explicitly closed it
   if (annotationPanelUserPref === false) return;
-  if (!annotationPanelOpen && annotationMap.size > 0) {
+  if (!annotationPanelOpen && sidebarItemCount() > 0) {
     setAnnotationPanelOpen(true);
   }
 }
 
+/** Total count of annotations + filled form fields for the sidebar badge. */
+function sidebarItemCount(): number {
+  return annotationMap.size + formFieldValues.size;
+}
+
 function updateAnnotationsBadge(): void {
-  const count = annotationMap.size;
+  const count = sidebarItemCount();
   if (count > 0 && !annotationPanelOpen) {
     annotationsBadgeEl.textContent = String(count);
     annotationsBadgeEl.style.display = "";
   } else {
     annotationsBadgeEl.style.display = "none";
   }
-  // Show/hide the toolbar button based on whether annotations exist
+  // Show/hide the toolbar button based on whether items exist
   annotationsBtn.style.display = count > 0 ? "" : "none";
 }
 
@@ -1187,7 +1197,7 @@ function getAnnotationY(def: PdfAnnotationDef): number {
 function renderAnnotationPanel(): void {
   if (!annotationPanelOpen) return;
 
-  annotationsPanelCountEl.textContent = String(annotationMap.size);
+  annotationsPanelCountEl.textContent = String(sidebarItemCount());
 
   // Group annotations by page, sorted by Y position within each page
   const byPage = new Map<number, TrackedAnnotation[]>();
@@ -1299,6 +1309,68 @@ function renderAnnotationPanel(): void {
         }
       });
 
+      annotationsPanelListEl.appendChild(card);
+    }
+  }
+
+  // Form fields section
+  if (formFieldValues.size > 0) {
+    const header = document.createElement("div");
+    header.className = "annotation-page-group";
+    header.textContent = "Form Fields";
+    annotationsPanelListEl.appendChild(header);
+
+    for (const [name, value] of formFieldValues) {
+      const card = document.createElement("div");
+      card.className = "annotation-card";
+
+      const row = document.createElement("div");
+      row.className = "annotation-card-row";
+
+      // Color swatch (blue for form fields)
+      const swatch = document.createElement("div");
+      swatch.className = "annotation-card-swatch";
+      swatch.style.background = "#4a90d9";
+      row.appendChild(swatch);
+
+      // Field name
+      const nameEl = document.createElement("span");
+      nameEl.className = "annotation-card-type";
+      nameEl.textContent = name;
+      row.appendChild(nameEl);
+
+      // Field value preview
+      const valueEl = document.createElement("span");
+      valueEl.className = "annotation-card-preview";
+      valueEl.textContent =
+        typeof value === "boolean" ? (value ? "checked" : "unchecked") : value;
+      row.appendChild(valueEl);
+
+      // Delete button
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "annotation-card-delete";
+      deleteBtn.title = "Clear field";
+      deleteBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3h8M4.5 3V2a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v1M5 5.5v3M7 5.5v3M3 3l.5 7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L9 3"/></svg>`;
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        formFieldValues.delete(name);
+        // Clear from annotation storage
+        if (pdfDocument) {
+          const ids = fieldNameToIds.get(name);
+          if (ids) {
+            for (const id of ids) {
+              pdfDocument.annotationStorage.remove(id);
+            }
+          }
+        }
+        updateAnnotationsBadge();
+        renderAnnotationPanel();
+        renderPage();
+        persistAnnotations();
+      });
+      row.appendChild(deleteBtn);
+
+      card.appendChild(row);
       annotationsPanelListEl.appendChild(card);
     }
   }
@@ -2325,6 +2397,8 @@ formLayerEl.addEventListener("input", (e) => {
       ? target.checked
       : target.value;
   formFieldValues.set(fieldName, value);
+  updateAnnotationsBadge();
+  renderAnnotationPanel();
   persistAnnotations();
 });
 
