@@ -2110,6 +2110,9 @@ async function renderPage() {
     formLayerEl.innerHTML = "";
     formLayerEl.style.width = `${viewport.width}px`;
     formLayerEl.style.height = `${viewport.height}px`;
+    // Set CSS custom properties so AnnotationLayer font-size rules work correctly
+    formLayerEl.style.setProperty("--scale-factor", `${scale}`);
+    formLayerEl.style.setProperty("--total-scale-factor", `${scale}`);
     try {
       const annotations = await page.getAnnotations();
       if (annotations.length > 0) {
@@ -2882,7 +2885,7 @@ function processCommands(commands: PdfCommand[]): void {
       case "fill_form":
         for (const field of cmd.fields) {
           formFieldValues.set(field.name, field.value);
-          // Also set in PDF.js annotation storage for live rendering
+          // Set in PDF.js annotation storage and update DOM elements directly
           if (pdfDocument) {
             const ids = fieldNameToIds.get(field.name);
             if (ids) {
@@ -2893,11 +2896,35 @@ function processCommands(commands: PdfCommand[]): void {
                       ? field.value
                       : String(field.value),
                 });
+                // Update the live DOM element if it exists on the current page
+                const el = formLayerEl.querySelector(
+                  `[data-element-id="${id}"]`,
+                ) as
+                  | HTMLInputElement
+                  | HTMLSelectElement
+                  | HTMLTextAreaElement
+                  | null;
+                if (el) {
+                  if (
+                    el instanceof HTMLInputElement &&
+                    el.type === "checkbox"
+                  ) {
+                    el.checked = !!field.value;
+                  } else if (el instanceof HTMLSelectElement) {
+                    el.value = String(field.value);
+                  } else {
+                    el.value = String(field.value);
+                  }
+                }
               }
+            } else {
+              log.info(
+                `fill_form: no annotation IDs for field "${field.name}"`,
+              );
             }
           }
         }
-        // Re-render to show updated form values
+        // Re-render to show updated form values (handles fields on other pages)
         renderPage();
         break;
       case "get_pages":
