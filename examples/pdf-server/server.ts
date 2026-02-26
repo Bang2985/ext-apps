@@ -260,11 +260,15 @@ const pollWaiters = new Map<string, () => void>();
 /** Active viewer UUIDs — tracks UUIDs issued by display_pdf */
 const activeViewUUIDs = new Set<string>();
 
+/** Valid form field names per viewer UUID (populated during display_pdf) */
+const viewFieldNames = new Map<string, Set<string>>();
+
 function pruneStaleQueues(): void {
   const now = Date.now();
   for (const [uuid, entry] of commandQueues) {
     if (now - entry.lastActivity > COMMAND_TTL_MS) {
       commandQueues.delete(uuid);
+      viewFieldNames.delete(uuid);
     }
   }
 }
@@ -966,34 +970,42 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       const uuid = randomUUID();
       activeViewUUIDs.add(uuid);
 
+      // Extract form field schema (used for elicitation and field name validation)
+      let formSchema: Awaited<ReturnType<typeof extractFormSchema>> = null;
+      try {
+        formSchema = await extractFormSchema(normalized, readPdfRange);
+      } catch {
+        // Non-fatal — PDF may not have form fields
+      }
+      if (formSchema) {
+        viewFieldNames.set(uuid, new Set(Object.keys(formSchema.properties)));
+      }
+
       // Elicit form field values if requested and client supports it
       let formFieldValues: Record<string, string | boolean> | undefined;
       let elicitResult: ElicitResult | undefined;
-      if (elicit_form_inputs) {
+      if (elicit_form_inputs && formSchema) {
         const clientCaps = server.server.getClientCapabilities();
         if (clientCaps?.elicitation?.form) {
           try {
-            const schema = await extractFormSchema(normalized, readPdfRange);
-            if (schema) {
-              elicitResult = await server.server.elicitInput({
-                message: `Please fill in the PDF form fields for "${normalized.split("/").pop() || normalized}":`,
-                requestedSchema: schema,
-              });
-              if (elicitResult.action === "accept" && elicitResult.content) {
-                formFieldValues = {};
-                for (const [k, v] of Object.entries(elicitResult.content)) {
-                  if (typeof v === "string" || typeof v === "boolean") {
-                    formFieldValues[k] = v;
-                  }
+            elicitResult = await server.server.elicitInput({
+              message: `Please fill in the PDF form fields for "${normalized.split("/").pop() || normalized}":`,
+              requestedSchema: formSchema,
+            });
+            if (elicitResult.action === "accept" && elicitResult.content) {
+              formFieldValues = {};
+              for (const [k, v] of Object.entries(elicitResult.content)) {
+                if (typeof v === "string" || typeof v === "boolean") {
+                  formFieldValues[k] = v;
                 }
-                // Queue fill_form command so the viewer picks it up
-                enqueueCommand(uuid, {
-                  type: "fill_form",
-                  fields: Object.entries(formFieldValues).map(
-                    ([name, value]) => ({ name, value }),
-                  ),
-                });
               }
+              // Queue fill_form command so the viewer picks it up
+              enqueueCommand(uuid, {
+                type: "fill_form",
+                fields: Object.entries(formFieldValues).map(
+                  ([name, value]) => ({ name, value }),
+                ),
+              });
             }
           } catch (err) {
             // Elicitation failed — continue without form values
@@ -1028,6 +1040,15 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
         contentParts.push({
           type: "text",
           text: `\nForm elicitation was ${elicitResult.action}d by the user.`,
+        });
+      }
+
+      // Include available form field names so the model knows what fill_form accepts
+      const fieldNames = viewFieldNames.get(uuid);
+      if (fieldNames && fieldNames.size > 0) {
+        contentParts.push({
+          type: "text",
+          text: `\nForm fields available for fill_form: ${[...fieldNames].join(", ")}`,
         });
       }
 
@@ -1323,7 +1344,7 @@ Example — highlight near page top (y=700 = near top) and stamp in middle (y=40
           description = `highlight text "${query}"${page ? ` on page ${page}` : ""}`;
           break;
         }
-        case "fill_form":
+        case "fill_form": {
           if (!fields || fields.length === 0)
             return {
               content: [
@@ -1331,9 +1352,40 @@ Example — highlight near page top (y=700 = near top) and stamp in middle (y=40
               ],
               isError: true,
             };
-          enqueueCommand(uuid, { type: "fill_form", fields });
-          description = `fill ${fields.length} form field(s)`;
+          const knownFields = viewFieldNames.get(uuid);
+          const validFields: typeof fields = [];
+          const unknownNames: string[] = [];
+          for (const f of fields) {
+            if (knownFields && !knownFields.has(f.name)) {
+              unknownNames.push(f.name);
+            } else {
+              validFields.push(f);
+            }
+          }
+          if (validFields.length > 0) {
+            enqueueCommand(uuid, { type: "fill_form", fields: validFields });
+          }
+          const parts: string[] = [];
+          if (validFields.length > 0) {
+            parts.push(
+              `Filled ${validFields.length} field(s): ${validFields.map((f) => f.name).join(", ")}`,
+            );
+          }
+          if (unknownNames.length > 0) {
+            parts.push(`Unknown field(s) skipped: ${unknownNames.join(", ")}`);
+          }
+          if (knownFields && knownFields.size > 0) {
+            parts.push(`Valid field names: ${[...knownFields].join(", ")}`);
+          }
+          description = parts.join(". ");
+          if (unknownNames.length > 0 && validFields.length === 0) {
+            return {
+              content: [{ type: "text", text: description }],
+              isError: true,
+            };
+          }
           break;
+        }
         case "get_pages": {
           const resolvedIntervals = intervals ?? [{}];
           const resolvedGetText = getText ?? true;
