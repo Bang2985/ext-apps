@@ -2144,7 +2144,16 @@ Example — add a signature image and a stamp, then screenshot to verify:
       );
       return {
         contents: [
-          { uri: RESOURCE_URI, mimeType: RESOURCE_MIME_TYPE, text: html },
+          {
+            uri: RESOURCE_URI,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: html,
+            _meta: {
+              ui: {
+                permissions: { clipboardWrite: {} },
+              },
+            },
+          },
         ],
       };
     },

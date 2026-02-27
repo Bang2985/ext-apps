@@ -3842,6 +3842,45 @@ document.addEventListener("keydown", (e) => {
     return;
   }
 
+  // Ctrl/Cmd+C: copy selected annotations
+  if ((e.ctrlKey || e.metaKey) && e.key === "c" && !e.shiftKey) {
+    if (
+      document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+    if (selectedAnnotationIds.size > 0) {
+      e.preventDefault();
+      copySelectedAnnotations();
+    }
+    return;
+  }
+
+  // Ctrl/Cmd+X: cut selected annotations (copy + delete)
+  if ((e.ctrlKey || e.metaKey) && e.key === "x" && !e.shiftKey) {
+    if (
+      document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement
+    ) {
+      return;
+    }
+    if (selectedAnnotationIds.size > 0) {
+      e.preventDefault();
+      copySelectedAnnotations().then((copied) => {
+        if (copied) {
+          const ids = [...selectedAnnotationIds];
+          selectAnnotation(null);
+          for (const id of ids) {
+            removeAnnotation(id);
+          }
+          persistAnnotations();
+        }
+      });
+    }
+    return;
+  }
+
   // Ctrl/Cmd+S: save (for local files)
   if ((e.ctrlKey || e.metaKey) && e.key === "s") {
     e.preventDefault();
@@ -4608,6 +4647,89 @@ app.connect().then(() => {
 });
 
 // =============================================================================
+// Image from File (shared by drag-drop and paste)
+// =============================================================================
+
+/**
+ * Create an image annotation from a File/Blob at the given screen position.
+ * If no position is given, places the image at the center of the current page.
+ */
+function addImageFromFile(
+  file: File | Blob,
+  screenX?: number,
+  screenY?: number,
+): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result as string;
+    const base64 = dataUrl.split(",")[1];
+    const mimeType =
+      file.type || (base64.startsWith("/9j/") ? "image/jpeg" : "image/png");
+
+    const img = new Image();
+    img.onload = () => {
+      const maxWidth = 200; // PDF points
+      const aspectRatio = img.naturalHeight / img.naturalWidth;
+      const width = Math.min(img.naturalWidth, maxWidth);
+      const height = width * aspectRatio;
+
+      // Convert screen position to PDF internal coords, or default to page center
+      let pdfX: number;
+      let pdfInternalY: number;
+      if (screenX != null && screenY != null) {
+        pdfX = screenX / scale;
+        pdfInternalY = (containerHtmlEl.clientHeight - screenY) / scale;
+      } else {
+        // Center on the visible page area
+        const pageW = containerHtmlEl.clientWidth / scale;
+        const pageH = containerHtmlEl.clientHeight / scale;
+        pdfX = pageW / 2 - width / 2;
+        pdfInternalY = pageH / 2 + height / 2;
+      }
+
+      const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const def: ImageAnnotation = {
+        type: "image",
+        id,
+        page: currentPage,
+        x: pdfX,
+        y: pdfInternalY,
+        width,
+        height,
+        imageData: base64,
+        mimeType,
+      };
+
+      // Downscale if base64 data is too large (> ~300KB)
+      if (base64.length > 400_000) {
+        const canvas = document.createElement("canvas");
+        const maxDim = 800;
+        let w = img.naturalWidth;
+        let h = img.naturalHeight;
+        if (w > maxDim || h > maxDim) {
+          const ratio = Math.min(maxDim / w, maxDim / h);
+          w = Math.round(w * ratio);
+          h = Math.round(h * ratio);
+        }
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0, w, h);
+        const quality = mimeType === "image/jpeg" ? 0.7 : undefined;
+        const downscaledUrl = canvas.toDataURL(mimeType, quality);
+        def.imageData = downscaledUrl.split(",")[1];
+      }
+
+      addAnnotation(def);
+      selectAnnotation(def.id);
+      persistAnnotations();
+    };
+    img.src = dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+
+// =============================================================================
 // Image Drag & Drop
 // =============================================================================
 
@@ -4623,72 +4745,112 @@ containerHtmlEl.addEventListener("drop", async (e: DragEvent) => {
   e.stopPropagation();
   if (!e.dataTransfer?.files.length) return;
 
+  const containerRect = containerHtmlEl.getBoundingClientRect();
+  const dropX = e.clientX - containerRect.left;
+  const dropY = e.clientY - containerRect.top;
+
   for (const file of e.dataTransfer.files) {
     if (!file.type.startsWith("image/")) continue;
-
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const dataUrl = reader.result as string;
-      // Strip the data:mime;base64, prefix
-      const base64 = dataUrl.split(",")[1];
-      const mimeType = file.type;
-
-      // Determine drop position in PDF coordinates
-      const containerRect = containerHtmlEl.getBoundingClientRect();
-      const dropX = e.clientX - containerRect.left;
-      const dropY = e.clientY - containerRect.top;
-      const pdfX = dropX / scale;
-
-      // Get natural image dimensions to determine aspect ratio
-      const img = new Image();
-      img.onload = () => {
-        const maxWidth = 200; // PDF points
-        const aspectRatio = img.naturalHeight / img.naturalWidth;
-        const width = Math.min(img.naturalWidth, maxWidth);
-        const height = width * aspectRatio;
-
-        // Convert screen drop point to PDF internal coords
-        // The drop Y is in screen space (top-left origin), convert to PDF space (bottom-left)
-        const pdfInternalY = (containerHtmlEl.clientHeight - dropY) / scale;
-
-        const id = `img_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const def: ImageAnnotation = {
-          type: "image",
-          id,
-          page: currentPage,
-          x: pdfX,
-          y: pdfInternalY,
-          width,
-          height,
-          imageData: base64,
-          mimeType,
-        };
-
-        // Downscale if base64 data is too large (> ~300KB)
-        if (base64.length > 400_000) {
-          const canvas = document.createElement("canvas");
-          const maxDim = 800;
-          let w = img.naturalWidth;
-          let h = img.naturalHeight;
-          if (w > maxDim || h > maxDim) {
-            const ratio = Math.min(maxDim / w, maxDim / h);
-            w = Math.round(w * ratio);
-            h = Math.round(h * ratio);
-          }
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d")!;
-          ctx.drawImage(img, 0, 0, w, h);
-          const quality = mimeType === "image/jpeg" ? 0.7 : undefined;
-          const downscaledUrl = canvas.toDataURL(mimeType, quality);
-          def.imageData = downscaledUrl.split(",")[1];
-        }
-
-        addAnnotation(def);
-        persistAnnotations();
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
+    addImageFromFile(file, dropX, dropY);
   }
 });
+
+// =============================================================================
+// Clipboard: Copy / Cut / Paste
+// =============================================================================
+
+/** Clipboard format identifier so we can recognize our own data on paste. */
+const CLIPBOARD_FORMAT = "pdf-annotations/v1";
+
+/** Copy selected annotations to clipboard as JSON. Returns true if anything was copied. */
+async function copySelectedAnnotations(): Promise<boolean> {
+  if (selectedAnnotationIds.size === 0) return false;
+  const defs: PdfAnnotationDef[] = [];
+  for (const id of selectedAnnotationIds) {
+    const tracked = annotationMap.get(id);
+    if (tracked) defs.push({ ...tracked.def });
+  }
+  if (defs.length === 0) return false;
+
+  const payload = JSON.stringify({
+    format: CLIPBOARD_FORMAT,
+    annotations: defs,
+  });
+  try {
+    await navigator.clipboard.writeText(payload);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Try to parse clipboard text as our annotation format. */
+function parseAnnotationClipboard(text: string): PdfAnnotationDef[] | null {
+  try {
+    const parsed = JSON.parse(text);
+    if (
+      parsed?.format === CLIPBOARD_FORMAT &&
+      Array.isArray(parsed.annotations)
+    ) {
+      return parsed.annotations;
+    }
+  } catch {
+    // Not our format
+  }
+  return null;
+}
+
+/** Paste annotations or images from clipboard. */
+function handlePaste(e: ClipboardEvent): void {
+  // Don't intercept paste in inputs
+  if (
+    document.activeElement instanceof HTMLInputElement ||
+    document.activeElement instanceof HTMLTextAreaElement ||
+    document.activeElement instanceof HTMLSelectElement
+  ) {
+    return;
+  }
+
+  const clipboardData = e.clipboardData;
+  if (!clipboardData) return;
+
+  // Check for image files first
+  for (const item of clipboardData.items) {
+    if (item.type.startsWith("image/")) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (file) addImageFromFile(file);
+      return;
+    }
+  }
+
+  // Check for text that might be our annotation format
+  const text = clipboardData.getData("text/plain");
+  if (!text) return;
+
+  const annotations = parseAnnotationClipboard(text);
+  if (!annotations || annotations.length === 0) return;
+
+  e.preventDefault();
+
+  // Paste with new IDs and a slight offset so they don't overlap originals
+  const offset = 10; // PDF points
+  selectAnnotation(null);
+  for (const def of annotations) {
+    def.id = `paste_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    def.page = currentPage;
+    if ("x" in def && typeof def.x === "number") def.x += offset;
+    if ("y" in def && typeof def.y === "number") def.y += offset;
+    if ("rects" in def && Array.isArray(def.rects)) {
+      for (const r of def.rects) {
+        r.x += offset;
+        r.y += offset;
+      }
+    }
+    addAnnotation(def);
+    selectAnnotation(def.id, true);
+  }
+  persistAnnotations();
+}
+
+document.addEventListener("paste", handlePaste);
