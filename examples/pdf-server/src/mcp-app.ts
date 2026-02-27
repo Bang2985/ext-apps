@@ -1832,22 +1832,15 @@ function renderImageAnnotation(
     el.style.transformOrigin = "center center";
   }
 
-  if (def.imageData) {
-    const mime = def.mimeType || "image/png";
+  const imgSrc = def.imageData
+    ? `data:${def.mimeType || "image/png"};base64,${def.imageData}`
+    : def.imageUrl;
+  if (imgSrc) {
     const img = document.createElement("img");
-    img.src = `data:${mime};base64,${def.imageData}`;
+    img.src = imgSrc;
     img.style.width = "100%";
     img.style.height = "100%";
-    img.style.objectFit = "contain";
-    img.style.pointerEvents = "none";
-    img.draggable = false;
-    el.appendChild(img);
-  } else if (def.imageUrl) {
-    const img = document.createElement("img");
-    img.src = def.imageUrl;
-    img.style.width = "100%";
-    img.style.height = "100%";
-    img.style.objectFit = "contain";
+    img.style.display = "block";
     img.style.pointerEvents = "none";
     img.draggable = false;
     el.appendChild(img);

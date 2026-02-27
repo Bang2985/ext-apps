@@ -547,6 +547,7 @@ body {
 
 .annotation-image {
   position: absolute;
+  overflow: hidden;
   pointer-events: auto;
   cursor: grab;
   user-select: none;
