@@ -190,6 +190,12 @@ const ImageAnnotation = AnnotationBase.extend({
     .optional()
     .describe("image/png or image/jpeg (auto-detected if omitted)"),
   rotation: z.number().optional(),
+  aspect: z
+    .enum(["preserve", "ignore"])
+    .optional()
+    .describe(
+      'Aspect ratio behavior on resize: "preserve" (default) keeps proportions, "ignore" allows free resize',
+    ),
 });
 
 const PdfAnnotationDef = z.discriminatedUnion("type", [

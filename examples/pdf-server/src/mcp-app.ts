@@ -1001,6 +1001,14 @@ function selectAnnotation(id: string | null, additive = false): void {
     }
   }
 
+  // Auto-expand the accordion section for the selected annotation's page
+  if (id) {
+    const tracked = annotationMap.get(id);
+    if (tracked) {
+      openAccordionSection = `page-${tracked.def.page}`;
+    }
+  }
+
   // Sync sidebar
   syncSidebarSelection();
   // Auto-dock floating panel away from selected annotation
@@ -1045,7 +1053,12 @@ function showHandles(tracked: TrackedAnnotation): void {
       const handle = document.createElement("div");
       handle.className = `annotation-handle ${corner}`;
       handle.dataset.corner = corner;
-      handle.title = "Drag to resize (Shift to keep proportions)";
+      const isImagePreserve =
+        def.type === "image" &&
+        ((def as ImageAnnotation).aspect ?? "preserve") === "preserve";
+      handle.title = isImagePreserve
+        ? "Drag to resize (Shift for free resize)"
+        : "Drag to resize (Shift to keep proportions)";
       setupResizeHandle(handle, tracked, corner);
       el.appendChild(handle);
     }
@@ -1242,8 +1255,20 @@ function setupResizeHandle(
         newH += pdfD.dy;
       }
 
-      // Shift key: constrain aspect ratio
-      if (ev.shiftKey) {
+      // Constrain aspect ratio:
+      // - For images: preserve by default (Shift to ignore), unless aspect="ignore"
+      // - For other shapes: Shift to preserve
+      const isImage = def.type === "image";
+      const imageAspect = isImage
+        ? ((def as ImageAnnotation).aspect ?? "preserve")
+        : undefined;
+      const constrainAspect = isImage
+        ? imageAspect === "preserve"
+          ? !ev.shiftKey // preserve by default, Shift to free-resize
+          : ev.shiftKey // ignore by default, Shift to constrain
+        : ev.shiftKey; // non-image: Shift to constrain
+
+      if (constrainAspect) {
         // Use the wider dimension to drive the other
         const candidateH = newW * aspectRatio;
         newH = candidateH;
@@ -2175,8 +2200,17 @@ function renderAnnotationPanel(): void {
     byPage.get(page)!.push(tracked);
   }
 
-  // Sort pages
-  const sortedPages = [...byPage.keys()].sort((a, b) => a - b);
+  // Group form fields by page
+  const fieldsByPage = new Map<number, [string, string | boolean][]>();
+  for (const [name, value] of formFieldValues) {
+    const page = fieldNameToPage.get(name) ?? 1;
+    if (!fieldsByPage.has(page)) fieldsByPage.set(page, []);
+    fieldsByPage.get(page)!.push([name, value]);
+  }
+
+  // Collect all pages that have annotations or form fields
+  const allPages = new Set([...byPage.keys(), ...fieldsByPage.keys()]);
+  const sortedPages = [...allPages].sort((a, b) => a - b);
 
   // Sort annotations within each page by Y position (descending = top-first in PDF coords)
   for (const annotations of byPage.values()) {
@@ -2187,44 +2221,33 @@ function renderAnnotationPanel(): void {
 
   // Auto-open section for current page only on first render (before user interaction)
   if (openAccordionSection === null && !accordionUserInteracted) {
-    if (byPage.has(currentPage)) {
+    if (allPages.has(currentPage)) {
       openAccordionSection = `page-${currentPage}`;
     } else if (sortedPages.length > 0) {
       openAccordionSection = `page-${sortedPages[0]}`;
-    } else if (formFieldValues.size > 0) {
-      openAccordionSection = "formFields";
     }
   }
 
   for (const pageNum of sortedPages) {
     const sectionKey = `page-${pageNum}`;
     const isOpen = openAccordionSection === sectionKey;
-    const annotations = byPage.get(pageNum)!;
+    const annotations = byPage.get(pageNum) ?? [];
+    const fields = fieldsByPage.get(pageNum) ?? [];
+    const itemCount = annotations.length + fields.length;
 
     appendAccordionSection(
-      `Page ${pageNum} (${annotations.length})`,
+      `Page ${pageNum} (${itemCount})`,
       sectionKey,
       isOpen,
       pageNum === currentPage,
       (body) => {
+        // Form fields first
+        for (const [name, value] of fields) {
+          body.appendChild(createFormFieldCard(name, value));
+        }
+        // Then annotations
         for (const tracked of annotations) {
           body.appendChild(createAnnotationCard(tracked));
-        }
-      },
-    );
-  }
-
-  // Form fields section
-  if (formFieldValues.size > 0) {
-    const isOpen = openAccordionSection === "formFields";
-    appendAccordionSection(
-      `Form Fields (${formFieldValues.size})`,
-      "formFields",
-      isOpen,
-      false,
-      (body) => {
-        for (const [name, value] of formFieldValues) {
-          body.appendChild(createFormFieldCard(name, value));
         }
       },
     );
@@ -2255,9 +2278,16 @@ function appendAccordionSection(
 
   header.addEventListener("click", () => {
     accordionUserInteracted = true;
-    openAccordionSection =
-      openAccordionSection === sectionKey ? null : sectionKey;
+    const opening = openAccordionSection !== sectionKey;
+    openAccordionSection = opening ? sectionKey : null;
     renderAnnotationPanel();
+    // Navigate to the page when expanding a page section
+    if (opening) {
+      const pageMatch = sectionKey.match(/^page-(\d+)$/);
+      if (pageMatch) {
+        goToPage(Number(pageMatch[1]));
+      }
+    }
   });
 
   annotationsPanelListEl.appendChild(header);
@@ -2443,6 +2473,8 @@ function createFormFieldCard(
   // Click handler: navigate to page and focus form input
   card.addEventListener("click", () => {
     const fieldPage = fieldNameToPage.get(name) ?? 1;
+    // Auto-expand the page's accordion section
+    openAccordionSection = `page-${fieldPage}`;
     const focusField = () => {
       const input = formLayerEl.querySelector(
         `[name="${CSS.escape(name)}"]`,

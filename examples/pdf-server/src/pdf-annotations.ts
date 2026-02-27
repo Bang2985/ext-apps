@@ -121,6 +121,7 @@ export interface ImageAnnotation extends AnnotationBase {
   imageUrl?: string;
   mimeType?: string;
   rotation?: number;
+  aspect?: "preserve" | "ignore";
 }
 
 export type PdfAnnotationDef =
