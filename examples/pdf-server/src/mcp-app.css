@@ -723,7 +723,7 @@ body {
 /* Annotation Side Panel */
 .annotation-panel {
   width: 250px;
-  min-width: 150px;
+  min-width: 120px;
   max-width: 50vw;
   background: var(--bg000);
   border-left: 1px solid var(--bg200);
@@ -810,7 +810,7 @@ body {
   padding: 0.25rem 0;
 }
 
-/* Floating panel in inline mode */
+/* Floating annotation panel (used in both inline and fullscreen) */
 .annotation-panel.floating {
   position: absolute;
   z-index: 20;
@@ -818,7 +818,7 @@ body {
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   max-height: 60%;
-  width: 180px;
+  width: 135px;
   transition: top 0.15s ease, left 0.15s ease, right 0.15s ease, bottom 0.15s ease;
 }
 .annotation-panel.floating .annotation-panel-header {

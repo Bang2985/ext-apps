@@ -1721,6 +1721,24 @@ function removeAnnotation(id: string, skipUndo = false): void {
 // Annotation Panel
 // =============================================================================
 
+/** Get inset margins for the floating panel (safe area + padding). */
+function getFloatingPanelInsets(): {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+} {
+  const insets = { top: 4, right: 4, bottom: 4, left: 4 };
+  const ctx = app.getHostContext();
+  if (ctx?.safeAreaInsets) {
+    insets.top += ctx.safeAreaInsets.top;
+    insets.right += ctx.safeAreaInsets.right;
+    insets.bottom += ctx.safeAreaInsets.bottom;
+    insets.left += ctx.safeAreaInsets.left;
+  }
+  return insets;
+}
+
 /** Position the floating panel based on its anchored corner. */
 function applyFloatingPanelPosition(): void {
   const el = annotationsPanelEl;
@@ -1729,28 +1747,46 @@ function applyFloatingPanelPosition(): void {
   el.style.bottom = "";
   el.style.left = "";
   el.style.right = "";
+
+  const insets = getFloatingPanelInsets();
+
   // When search bar is visible and panel is anchored top-right, offset below it
-  const searchBarOffset =
+  const searchBarExtra =
     searchOpen && floatingPanelCorner === "top-right"
-      ? `${searchBarEl.offsetHeight + 2}px`
-      : "0";
-  switch (floatingPanelCorner) {
-    case "top-right":
-      el.style.top = searchBarOffset;
-      el.style.right = "0";
-      break;
-    case "top-left":
-      el.style.top = "0";
-      el.style.left = "0";
-      break;
-    case "bottom-right":
-      el.style.bottom = "0";
-      el.style.right = "0";
-      break;
-    case "bottom-left":
-      el.style.bottom = "0";
-      el.style.left = "0";
-      break;
+      ? searchBarEl.offsetHeight + 2
+      : 0;
+
+  const isRight = floatingPanelCorner.includes("right");
+  const isBottom = floatingPanelCorner.includes("bottom");
+
+  if (isBottom) {
+    el.style.bottom = `${insets.bottom}px`;
+  } else {
+    el.style.top = `${insets.top + searchBarExtra}px`;
+  }
+  if (isRight) {
+    el.style.right = `${insets.right}px`;
+  } else {
+    el.style.left = `${insets.left}px`;
+  }
+
+  // Update resize handle position based on anchorage
+  updateResizeHandlePosition();
+}
+
+/** Position the resize handle on the correct edge based on panel anchorage. */
+function updateResizeHandlePosition(): void {
+  const resizeHandle = document.getElementById("annotation-panel-resize");
+  if (!resizeHandle) return;
+  const isRight = floatingPanelCorner.includes("right");
+  if (isRight) {
+    // Panel is on the right → resize handle on the left edge
+    resizeHandle.style.left = "-3px";
+    resizeHandle.style.right = "";
+  } else {
+    // Panel is on the left → resize handle on the right edge
+    resizeHandle.style.left = "";
+    resizeHandle.style.right = "-3px";
   }
 }
 
@@ -1798,21 +1834,12 @@ function setAnnotationPanelOpen(open: boolean): void {
   annotationsBtn.classList.toggle("active", open);
   updateAnnotationsBadge();
 
-  if (currentDisplayMode === "inline") {
-    // Inline mode: floating panel over the canvas area
-    annotationsPanelEl.classList.toggle("floating", true);
-    annotationsPanelEl.style.display = open ? "" : "none";
-    if (open) {
-      applyFloatingPanelPosition();
-      renderAnnotationPanel();
-    }
-  } else {
-    // Fullscreen mode: side panel
-    annotationsPanelEl.classList.remove("floating");
-    annotationsPanelEl.style.display = open ? "" : "none";
-    if (open) {
-      renderAnnotationPanel();
-    }
+  // Always use floating panel (both inline and fullscreen)
+  annotationsPanelEl.classList.toggle("floating", true);
+  annotationsPanelEl.style.display = open ? "" : "none";
+  if (open) {
+    applyFloatingPanelPosition();
+    renderAnnotationPanel();
   }
   requestFitToContent();
 }
@@ -2287,7 +2314,7 @@ function initAnnotationPanel(): void {
     const savedWidth = localStorage.getItem("pdf-annotation-panel-width");
     if (savedWidth) {
       const w = parseInt(savedWidth, 10);
-      if (w >= 150) {
+      if (w >= 120) {
         annotationsPanelEl.style.width = `${w}px`;
       }
     }
@@ -2295,17 +2322,20 @@ function initAnnotationPanel(): void {
     /* ignore */
   }
 
-  // Resize handle
+  // Resize handle — direction-aware based on anchorage
   const resizeHandle = document.getElementById("annotation-panel-resize")!;
   resizeHandle.addEventListener("mousedown", (e) => {
     e.preventDefault();
     resizeHandle.classList.add("dragging");
     const startX = e.clientX;
     const startWidth = annotationsPanelEl.offsetWidth;
+    const isRight = floatingPanelCorner.includes("right");
 
     const onMouseMove = (ev: MouseEvent) => {
-      // Panel is on the right, so dragging left increases width
-      const newWidth = Math.max(150, startWidth + (startX - ev.clientX));
+      const dx = ev.clientX - startX;
+      // If panel is on the right, dragging left (negative dx) increases width
+      // If panel is on the left, dragging right (positive dx) increases width
+      const newWidth = Math.max(120, startWidth + (isRight ? -dx : dx));
       annotationsPanelEl.style.width = `${newWidth}px`;
     };
     const onMouseUp = () => {
