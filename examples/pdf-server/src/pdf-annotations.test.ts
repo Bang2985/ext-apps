@@ -1,0 +1,847 @@
+import { describe, it, expect, beforeAll } from "bun:test";
+import {
+  emptyDiff,
+  isDiffEmpty,
+  serializeDiff,
+  deserializeDiff,
+  mergeAnnotations,
+  computeDiff,
+  cssColorToRgb,
+  defaultColor,
+  importPdfjsAnnotation,
+  buildAnnotatedPdfBytes,
+  base64ToUint8Array,
+  uint8ArrayToBase64,
+  type PdfAnnotationDef,
+  type AnnotationDiff,
+} from "./pdf-annotations";
+import { PDFDocument } from "pdf-lib";
+
+// =============================================================================
+// Diff Model
+// =============================================================================
+
+describe("AnnotationDiff model", () => {
+  describe("emptyDiff", () => {
+    it("creates a diff with no changes", () => {
+      const diff = emptyDiff();
+      expect(diff.added).toEqual([]);
+      expect(diff.removed).toEqual([]);
+      expect(diff.formFields).toEqual({});
+    });
+  });
+
+  describe("isDiffEmpty", () => {
+    it("returns true for empty diff", () => {
+      expect(isDiffEmpty(emptyDiff())).toBe(true);
+    });
+
+    it("returns false when there are added annotations", () => {
+      const diff = emptyDiff();
+      diff.added.push({
+        type: "note",
+        id: "n1",
+        page: 1,
+        x: 100,
+        y: 200,
+        content: "test",
+      });
+      expect(isDiffEmpty(diff)).toBe(false);
+    });
+
+    it("returns false when there are removed annotations", () => {
+      const diff = emptyDiff();
+      diff.removed.push("pdf-5-0");
+      expect(isDiffEmpty(diff)).toBe(false);
+    });
+
+    it("returns false when there are form field values", () => {
+      const diff = emptyDiff();
+      diff.formFields["name"] = "John";
+      expect(isDiffEmpty(diff)).toBe(false);
+    });
+  });
+
+  describe("serializeDiff / deserializeDiff", () => {
+    it("round-trips an empty diff", () => {
+      const diff = emptyDiff();
+      const json = serializeDiff(diff);
+      const restored = deserializeDiff(json);
+      expect(restored).toEqual(diff);
+    });
+
+    it("round-trips a diff with all fields populated", () => {
+      const diff: AnnotationDiff = {
+        added: [
+          {
+            type: "highlight",
+            id: "h1",
+            page: 1,
+            rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+            color: "#ff0000",
+          },
+        ],
+        removed: ["pdf-5-0", "pdf-8-0"],
+        formFields: { name: "Alice", agree: true },
+      };
+      const json = serializeDiff(diff);
+      const restored = deserializeDiff(json);
+      expect(restored).toEqual(diff);
+    });
+
+    it("returns empty diff for invalid JSON", () => {
+      expect(deserializeDiff("not json")).toEqual(emptyDiff());
+    });
+
+    it("returns empty diff for JSON with wrong structure", () => {
+      expect(deserializeDiff('{"foo": "bar"}')).toEqual(emptyDiff());
+    });
+
+    it("handles missing fields gracefully", () => {
+      const result = deserializeDiff('{"added": []}');
+      expect(result.added).toEqual([]);
+      expect(result.removed).toEqual([]);
+      expect(result.formFields).toEqual({});
+    });
+  });
+});
+
+// =============================================================================
+// Merge Logic
+// =============================================================================
+
+describe("mergeAnnotations", () => {
+  const pdfNote: PdfAnnotationDef = {
+    type: "note",
+    id: "pdf-5-0",
+    page: 1,
+    x: 100,
+    y: 200,
+    content: "Original note",
+  };
+
+  const pdfHighlight: PdfAnnotationDef = {
+    type: "highlight",
+    id: "pdf-8-0",
+    page: 1,
+    rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+  };
+
+  const userStamp: PdfAnnotationDef = {
+    type: "stamp",
+    id: "s1",
+    page: 1,
+    x: 300,
+    y: 400,
+    label: "APPROVED",
+  };
+
+  it("returns PDF annotations unchanged when diff is empty", () => {
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], emptyDiff());
+    expect(merged).toEqual([pdfNote, pdfHighlight]);
+  });
+
+  it("filters out removed PDF annotations", () => {
+    const diff: AnnotationDiff = {
+      added: [],
+      removed: ["pdf-5-0"],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], diff);
+    expect(merged).toEqual([pdfHighlight]);
+  });
+
+  it("includes added annotations", () => {
+    const diff: AnnotationDiff = {
+      added: [userStamp],
+      removed: [],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([pdfNote], diff);
+    expect(merged).toHaveLength(2);
+    expect(merged).toContainEqual(pdfNote);
+    expect(merged).toContainEqual(userStamp);
+  });
+
+  it("added annotations with same ID as PDF annotation override the PDF one", () => {
+    const modifiedNote: PdfAnnotationDef = {
+      ...pdfNote,
+      content: "Modified note",
+    };
+    const diff: AnnotationDiff = {
+      added: [modifiedNote],
+      removed: [],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], diff);
+    expect(merged).toHaveLength(2);
+    const note = merged.find((a) => a.id === "pdf-5-0");
+    expect(note).toBeDefined();
+    expect((note as any).content).toBe("Modified note");
+  });
+
+  it("handles both additions and removals", () => {
+    const diff: AnnotationDiff = {
+      added: [userStamp],
+      removed: ["pdf-5-0"],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], diff);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((a) => a.id).sort()).toEqual(["pdf-8-0", "s1"]);
+  });
+
+  it("returns only added annotations when all PDF annotations are removed", () => {
+    const diff: AnnotationDiff = {
+      added: [userStamp],
+      removed: ["pdf-5-0", "pdf-8-0"],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], diff);
+    expect(merged).toEqual([userStamp]);
+  });
+
+  it("handles empty PDF annotations with additions", () => {
+    const diff: AnnotationDiff = {
+      added: [userStamp],
+      removed: [],
+      formFields: {},
+    };
+    const merged = mergeAnnotations([], diff);
+    expect(merged).toEqual([userStamp]);
+  });
+});
+
+// =============================================================================
+// computeDiff
+// =============================================================================
+
+describe("computeDiff", () => {
+  const pdfNote: PdfAnnotationDef = {
+    type: "note",
+    id: "pdf-5-0",
+    page: 1,
+    x: 100,
+    y: 200,
+    content: "Original",
+  };
+  const pdfHighlight: PdfAnnotationDef = {
+    type: "highlight",
+    id: "pdf-8-0",
+    page: 1,
+    rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+  };
+
+  it("produces empty diff when nothing changed", () => {
+    const diff = computeDiff(
+      [pdfNote, pdfHighlight],
+      [pdfNote, pdfHighlight],
+      new Map(),
+    );
+    expect(diff.added).toEqual([]);
+    expect(diff.removed).toEqual([]);
+    expect(diff.formFields).toEqual({});
+  });
+
+  it("detects added annotations", () => {
+    const userStamp: PdfAnnotationDef = {
+      type: "stamp",
+      id: "s1",
+      page: 1,
+      x: 300,
+      y: 400,
+      label: "DRAFT",
+    };
+    const diff = computeDiff([pdfNote], [pdfNote, userStamp], new Map());
+    expect(diff.added).toEqual([userStamp]);
+    expect(diff.removed).toEqual([]);
+  });
+
+  it("detects removed annotations", () => {
+    const diff = computeDiff(
+      [pdfNote, pdfHighlight],
+      [pdfHighlight],
+      new Map(),
+    );
+    expect(diff.removed).toEqual(["pdf-5-0"]);
+    expect(diff.added).toEqual([]);
+  });
+
+  it("captures form field values", () => {
+    const fields = new Map<string, string | boolean>([
+      ["name", "Alice"],
+      ["agree", true],
+    ]);
+    const diff = computeDiff([pdfNote], [pdfNote], fields);
+    expect(diff.formFields).toEqual({ name: "Alice", agree: true });
+  });
+
+  it("round-trips through mergeAnnotations", () => {
+    const userStamp: PdfAnnotationDef = {
+      type: "stamp",
+      id: "s1",
+      page: 1,
+      x: 300,
+      y: 400,
+      label: "FINAL",
+    };
+    const current = [pdfHighlight, userStamp]; // removed pdfNote, added stamp
+    const diff = computeDiff([pdfNote, pdfHighlight], current, new Map());
+
+    // Merging back should produce the current set
+    const merged = mergeAnnotations([pdfNote, pdfHighlight], diff);
+    expect(merged.map((a) => a.id).sort()).toEqual(
+      current.map((a) => a.id).sort(),
+    );
+  });
+});
+
+// =============================================================================
+// Color Conversion
+// =============================================================================
+
+describe("cssColorToRgb", () => {
+  it("parses 6-digit hex", () => {
+    expect(cssColorToRgb("#ff0000")).toEqual({ r: 1, g: 0, b: 0 });
+    expect(cssColorToRgb("#00ff00")).toEqual({ r: 0, g: 1, b: 0 });
+    expect(cssColorToRgb("#0000ff")).toEqual({ r: 0, g: 0, b: 1 });
+  });
+
+  it("parses 3-digit hex", () => {
+    expect(cssColorToRgb("#f00")).toEqual({ r: 1, g: 0, b: 0 });
+    expect(cssColorToRgb("#0f0")).toEqual({ r: 0, g: 1, b: 0 });
+  });
+
+  it("parses 8-digit hex (ignores alpha)", () => {
+    const result = cssColorToRgb("#ff000080");
+    expect(result).toEqual({ r: 1, g: 0, b: 0 });
+  });
+
+  it("parses rgb()", () => {
+    expect(cssColorToRgb("rgb(255, 0, 0)")).toEqual({ r: 1, g: 0, b: 0 });
+    expect(cssColorToRgb("rgb(128, 128, 128)")).toEqual({
+      r: 128 / 255,
+      g: 128 / 255,
+      b: 128 / 255,
+    });
+  });
+
+  it("parses rgba()", () => {
+    expect(cssColorToRgb("rgba(255, 128, 0, 0.5)")).toEqual({
+      r: 1,
+      g: 128 / 255,
+      b: 0,
+    });
+  });
+
+  it("returns null for invalid input", () => {
+    expect(cssColorToRgb("not-a-color")).toBeNull();
+    expect(cssColorToRgb("")).toBeNull();
+    expect(cssColorToRgb("red")).toBeNull();
+  });
+
+  it("is case-insensitive for hex", () => {
+    expect(cssColorToRgb("#FF0000")).toEqual({ r: 1, g: 0, b: 0 });
+    expect(cssColorToRgb("#aaBBcc")).toEqual({
+      r: 0xaa / 255,
+      g: 0xbb / 255,
+      b: 0xcc / 255,
+    });
+  });
+});
+
+describe("defaultColor", () => {
+  it("returns yellow for highlights", () => {
+    expect(defaultColor("highlight")).toBe("#ffff00");
+  });
+
+  it("returns red for underline and strikethrough", () => {
+    expect(defaultColor("underline")).toBe("#ff0000");
+    expect(defaultColor("strikethrough")).toBe("#ff0000");
+  });
+
+  it("returns distinct colors for each type", () => {
+    const types: PdfAnnotationDef["type"][] = [
+      "highlight",
+      "underline",
+      "strikethrough",
+      "note",
+      "rectangle",
+      "freetext",
+      "stamp",
+    ];
+    const colors = types.map(defaultColor);
+    // At minimum underline and strikethrough share the same color
+    const unique = new Set(colors);
+    expect(unique.size).toBeGreaterThanOrEqual(5);
+  });
+});
+
+// =============================================================================
+// PDF.js Annotation Import
+// =============================================================================
+
+describe("importPdfjsAnnotation", () => {
+  it("imports a highlight annotation", () => {
+    const ann = {
+      annotationType: 9,
+      ref: { num: 5, gen: 0 },
+      rect: [72, 700, 272, 712],
+      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      color: new Uint8ClampedArray([255, 255, 0]),
+      contentsObj: { str: "Important" },
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("highlight");
+    expect(result!.id).toBe("pdf-5-0");
+    expect(result!.page).toBe(1);
+    expect((result as any).rects).toHaveLength(1);
+    expect((result as any).content).toBe("Important");
+    expect((result as any).color).toBe("#ffff00");
+  });
+
+  it("imports an underline annotation", () => {
+    const ann = {
+      annotationType: 10,
+      ref: { num: 6, gen: 0 },
+      rect: [72, 700, 272, 712],
+      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      color: new Uint8ClampedArray([255, 0, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("underline");
+    expect(result!.id).toBe("pdf-6-0");
+  });
+
+  it("imports a strikethrough annotation", () => {
+    const ann = {
+      annotationType: 12,
+      ref: { num: 7, gen: 0 },
+      rect: [72, 700, 272, 712],
+      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      color: new Uint8ClampedArray([255, 0, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 2, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("strikethrough");
+    expect(result!.page).toBe(2);
+  });
+
+  it("imports a note (Text) annotation", () => {
+    const ann = {
+      annotationType: 1,
+      ref: { num: 10, gen: 0 },
+      rect: [100, 400, 124, 424],
+      contentsObj: { str: "Remember this" },
+      color: new Uint8ClampedArray([245, 166, 35]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("note");
+    expect(result!.id).toBe("pdf-10-0");
+    const note = result as any;
+    expect(note.x).toBe(100);
+    expect(note.y).toBe(424); // y + height
+    expect(note.content).toBe("Remember this");
+  });
+
+  it("imports a rectangle (Square) annotation", () => {
+    const ann = {
+      annotationType: 5,
+      ref: { num: 12, gen: 0 },
+      rect: [50, 300, 250, 400],
+      color: new Uint8ClampedArray([0, 102, 204]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("rectangle");
+    const rect = result as any;
+    expect(rect.x).toBe(50);
+    expect(rect.y).toBe(300);
+    expect(rect.width).toBe(200);
+    expect(rect.height).toBe(100);
+  });
+
+  it("imports a freetext annotation", () => {
+    const ann = {
+      annotationType: 3,
+      ref: { num: 15, gen: 0 },
+      rect: [100, 500, 300, 520],
+      contentsObj: { str: "Hello World" },
+      color: new Uint8ClampedArray([51, 51, 51]),
+      fontSize: 14,
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("freetext");
+    const ft = result as any;
+    expect(ft.content).toBe("Hello World");
+    expect(ft.fontSize).toBe(14);
+  });
+
+  it("imports a stamp annotation", () => {
+    const ann = {
+      annotationType: 13,
+      ref: { num: 20, gen: 0 },
+      rect: [200, 600, 350, 640],
+      name: "APPROVED",
+      color: new Uint8ClampedArray([204, 0, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("stamp");
+    expect((result as any).label).toBe("APPROVED");
+  });
+
+  it("returns null for unsupported types (LINK=2)", () => {
+    const ann = {
+      annotationType: 2,
+      ref: { num: 30, gen: 0 },
+      rect: [0, 0, 100, 20],
+    };
+    expect(importPdfjsAnnotation(ann, 1, 0)).toBeNull();
+  });
+
+  it("returns null for form widgets (type 20)", () => {
+    const ann = {
+      annotationType: 20,
+      ref: { num: 31, gen: 0 },
+      rect: [0, 0, 100, 20],
+    };
+    expect(importPdfjsAnnotation(ann, 1, 0)).toBeNull();
+  });
+
+  it("generates fallback ID when ref is missing", () => {
+    const ann = {
+      annotationType: 1,
+      rect: [100, 400, 124, 424],
+      contentsObj: { str: "No ref" },
+    };
+    const result = importPdfjsAnnotation(ann, 3, 7);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("pdf-3-7");
+  });
+
+  it("uses ann.id when ref is missing but id exists", () => {
+    const ann = {
+      annotationType: 1,
+      id: "custom-id",
+      rect: [100, 400, 124, 424],
+      contentsObj: { str: "With id" },
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("pdf-custom-id");
+  });
+
+  it("handles null color gracefully", () => {
+    const ann = {
+      annotationType: 5,
+      ref: { num: 40, gen: 0 },
+      rect: [50, 300, 250, 400],
+      color: null,
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect((result as any).color).toBeUndefined();
+  });
+
+  it("handles highlight without quadPoints (uses rect)", () => {
+    const ann = {
+      annotationType: 9,
+      ref: { num: 50, gen: 0 },
+      rect: [72, 700, 272, 712],
+      color: new Uint8ClampedArray([255, 255, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("highlight");
+    expect((result as any).rects).toHaveLength(1);
+    expect((result as any).rects[0]).toEqual({
+      x: 72,
+      y: 700,
+      width: 200,
+      height: 12,
+    });
+  });
+});
+
+// =============================================================================
+// Base64 Helpers
+// =============================================================================
+
+describe("base64 helpers", () => {
+  it("round-trips uint8array through base64", () => {
+    const original = new Uint8Array([0, 1, 2, 255, 128, 64]);
+    const base64 = uint8ArrayToBase64(original);
+    const restored = base64ToUint8Array(base64);
+    expect(restored).toEqual(original);
+  });
+
+  it("handles empty array", () => {
+    const empty = new Uint8Array(0);
+    const base64 = uint8ArrayToBase64(empty);
+    expect(base64).toBe("");
+    expect(base64ToUint8Array(base64)).toEqual(empty);
+  });
+
+  it("produces valid base64", () => {
+    const data = new Uint8Array([72, 101, 108, 108, 111]); // "Hello"
+    const base64 = uint8ArrayToBase64(data);
+    expect(base64).toBe("SGVsbG8=");
+  });
+});
+
+// =============================================================================
+// PDF Annotation Dict Creation (integration test with pdf-lib)
+// =============================================================================
+
+describe("buildAnnotatedPdfBytes", () => {
+  let blankPdfBytes: Uint8Array;
+
+  // Create a minimal blank PDF for testing
+  beforeAll(async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([612, 792]); // US Letter
+    blankPdfBytes = await doc.save();
+  });
+
+  it("returns valid PDF bytes for empty annotations", async () => {
+    const result = await buildAnnotatedPdfBytes(blankPdfBytes, [], new Map());
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect(result.length).toBeGreaterThan(0);
+
+    // Verify it's a valid PDF (starts with %PDF)
+    const header = String.fromCharCode(...result.slice(0, 5));
+    expect(header).toBe("%PDF-");
+  });
+
+  it("adds highlight annotation to PDF", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "highlight",
+        id: "h1",
+        page: 1,
+        rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+        color: "#ffff00",
+        content: "Important text",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+
+    // Load result and check annotations exist
+    const doc = await PDFDocument.load(result);
+    const page = doc.getPages()[0];
+    const annots = page.node.Annots();
+    expect(annots).toBeDefined();
+    expect(annots!.size()).toBeGreaterThanOrEqual(1);
+  });
+
+  it("adds note annotation to PDF", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "note",
+        id: "n1",
+        page: 1,
+        x: 100,
+        y: 500,
+        content: "This is a note",
+        color: "#f5a623",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const page = doc.getPages()[0];
+    const annots = page.node.Annots();
+    expect(annots).toBeDefined();
+    expect(annots!.size()).toBeGreaterThanOrEqual(1);
+  });
+
+  it("adds rectangle annotation to PDF", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "rectangle",
+        id: "r1",
+        page: 1,
+        x: 50,
+        y: 300,
+        width: 200,
+        height: 100,
+        color: "#0066cc",
+        fillColor: "#e0e8ff",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const page = doc.getPages()[0];
+    const annots = page.node.Annots();
+    expect(annots).toBeDefined();
+  });
+
+  it("adds freetext annotation to PDF", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "freetext",
+        id: "ft1",
+        page: 1,
+        x: 72,
+        y: 600,
+        content: "Hello World",
+        fontSize: 16,
+        color: "#333333",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const annots = doc.getPages()[0].node.Annots();
+    expect(annots).toBeDefined();
+  });
+
+  it("adds stamp annotation with appearance stream", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "stamp",
+        id: "s1",
+        page: 1,
+        x: 200,
+        y: 400,
+        label: "DRAFT",
+        color: "#cc0000",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const annots = doc.getPages()[0].node.Annots();
+    expect(annots).toBeDefined();
+  });
+
+  it("adds multiple annotations of different types", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "highlight",
+        id: "h1",
+        page: 1,
+        rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+      },
+      {
+        type: "note",
+        id: "n1",
+        page: 1,
+        x: 100,
+        y: 500,
+        content: "A note",
+      },
+      {
+        type: "rectangle",
+        id: "r1",
+        page: 1,
+        x: 50,
+        y: 300,
+        width: 100,
+        height: 50,
+      },
+      {
+        type: "stamp",
+        id: "s1",
+        page: 1,
+        x: 200,
+        y: 400,
+        label: "FINAL",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const annots = doc.getPages()[0].node.Annots();
+    expect(annots).toBeDefined();
+    expect(annots!.size()).toBeGreaterThanOrEqual(4);
+  });
+
+  it("skips annotations with invalid page numbers", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "note",
+        id: "n1",
+        page: 99, // page doesn't exist
+        x: 100,
+        y: 500,
+        content: "Ghost note",
+      },
+    ];
+
+    const result = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+    const doc = await PDFDocument.load(result);
+    const annots = doc.getPages()[0].node.Annots();
+    // Should have no annotations since page 99 doesn't exist
+    expect(annots?.size() ?? 0).toBe(0);
+  });
+
+  it("produces a valid re-loadable PDF", async () => {
+    const annotations: PdfAnnotationDef[] = [
+      {
+        type: "highlight",
+        id: "h1",
+        page: 1,
+        rects: [{ x: 72, y: 700, width: 200, height: 12 }],
+        color: "#ffff00",
+      },
+      {
+        type: "stamp",
+        id: "s1",
+        page: 1,
+        x: 300,
+        y: 400,
+        label: "APPROVED",
+      },
+    ];
+
+    const bytes = await buildAnnotatedPdfBytes(
+      blankPdfBytes,
+      annotations,
+      new Map(),
+    );
+
+    // Should be able to load the result again
+    const doc = await PDFDocument.load(bytes);
+    expect(doc.getPageCount()).toBe(1);
+
+    // Should be able to save it again
+    const bytes2 = await doc.save();
+    expect(bytes2.length).toBeGreaterThan(0);
+  });
+});

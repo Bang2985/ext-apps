@@ -17,7 +17,21 @@ import type { ContentBlock } from "@modelcontextprotocol/sdk/spec.types.js";
 import * as pdfjsLib from "pdfjs-dist";
 import { AnnotationLayer, TextLayer } from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { PDFDocument, rgb, StandardFonts, degrees } from "pdf-lib";
+import {
+  type PdfAnnotationDef,
+  type Rect,
+  type RectangleAnnotation,
+  type StampAnnotation,
+  type NoteAnnotation,
+  type FreetextAnnotation,
+  serializeDiff,
+  deserializeDiff,
+  mergeAnnotations,
+  computeDiff,
+  buildAnnotatedPdfBytes,
+  importPdfjsAnnotation,
+  uint8ArrayToBase64,
+} from "./pdf-annotations.js";
 import "./global.css";
 import "./mcp-app.css";
 
@@ -44,89 +58,7 @@ let pdfTitle: string | undefined;
 let viewUUID: string | undefined;
 let currentRenderTask: { cancel: () => void } | null = null;
 
-// =============================================================================
-// Annotation Types (mirrors server schemas)
-// =============================================================================
-
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-/** Stamp label — any text is allowed. Common labels: APPROVED, DRAFT, CONFIDENTIAL, FINAL, VOID, REJECTED. */
-type StampLabel = string;
-
-interface AnnotationBase {
-  id: string;
-  page: number;
-}
-
-interface HighlightAnnotation extends AnnotationBase {
-  type: "highlight";
-  rects: Rect[];
-  color?: string;
-  content?: string;
-}
-
-interface UnderlineAnnotation extends AnnotationBase {
-  type: "underline";
-  rects: Rect[];
-  color?: string;
-}
-
-interface StrikethroughAnnotation extends AnnotationBase {
-  type: "strikethrough";
-  rects: Rect[];
-  color?: string;
-}
-
-interface NoteAnnotation extends AnnotationBase {
-  type: "note";
-  x: number;
-  y: number;
-  content: string;
-  color?: string;
-}
-
-interface RectangleAnnotation extends AnnotationBase {
-  type: "rectangle";
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  color?: string;
-  fillColor?: string;
-  rotation?: number;
-}
-
-interface FreetextAnnotation extends AnnotationBase {
-  type: "freetext";
-  x: number;
-  y: number;
-  content: string;
-  fontSize?: number;
-  color?: string;
-}
-
-interface StampAnnotation extends AnnotationBase {
-  type: "stamp";
-  x: number;
-  y: number;
-  label: StampLabel;
-  color?: string;
-  rotation?: number;
-}
-
-type PdfAnnotationDef =
-  | HighlightAnnotation
-  | UnderlineAnnotation
-  | StrikethroughAnnotation
-  | NoteAnnotation
-  | RectangleAnnotation
-  | FreetextAnnotation
-  | StampAnnotation;
+// Annotation types imported from ./pdf-annotations.ts
 
 interface TrackedAnnotation {
   def: PdfAnnotationDef;
@@ -136,6 +68,9 @@ interface TrackedAnnotation {
 // Annotation state
 const annotationMap = new Map<string, TrackedAnnotation>();
 const formFieldValues = new Map<string, string | boolean>();
+
+/** Annotations imported from the PDF file (baseline for diff computation). */
+let pdfBaselineAnnotations: PdfAnnotationDef[] = [];
 
 // Dirty flag — tracks unsaved local changes
 let isDirty = false;
@@ -2797,23 +2732,54 @@ function annotationStorageKey(): string | null {
   return null;
 }
 
+/**
+ * Import annotations from the loaded PDF to establish the baseline.
+ * These are the annotations that exist in the PDF file itself.
+ */
+async function loadBaselineAnnotations(
+  doc: pdfjsLib.PDFDocumentProxy,
+): Promise<void> {
+  pdfBaselineAnnotations = [];
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    try {
+      const page = await doc.getPage(pageNum);
+      const annotations = await page.getAnnotations();
+      for (let i = 0; i < annotations.length; i++) {
+        const ann = annotations[i];
+        const def = importPdfjsAnnotation(ann, pageNum, i);
+        if (def) {
+          pdfBaselineAnnotations.push(def);
+          // Add to annotationMap if not already present (from localStorage restore)
+          if (!annotationMap.has(def.id)) {
+            annotationMap.set(def.id, { def, elements: [] });
+          }
+        }
+      }
+    } catch {
+      // Skip pages that fail to load annotations
+    }
+  }
+  log.info(
+    `Loaded ${pdfBaselineAnnotations.length} baseline annotations from PDF`,
+  );
+}
+
 function persistAnnotations(): void {
   if (!isRestoring) setDirty(true);
   const key = annotationStorageKey();
   if (!key) return;
   try {
-    const data: PdfAnnotationDef[] = [];
+    // Compute diff relative to PDF baseline
+    const currentAnnotations: PdfAnnotationDef[] = [];
     for (const tracked of annotationMap.values()) {
-      data.push(tracked.def);
+      currentAnnotations.push(tracked.def);
     }
-    const formData: Record<string, string | boolean> = {};
-    for (const [k, v] of formFieldValues) {
-      formData[k] = v;
-    }
-    localStorage.setItem(
-      key,
-      JSON.stringify({ annotations: data, formFields: formData }),
+    const diff = computeDiff(
+      pdfBaselineAnnotations,
+      currentAnnotations,
+      formFieldValues,
     );
+    localStorage.setItem(key, serializeDiff(diff));
   } catch {
     // localStorage may be full or unavailable
   }
@@ -2826,26 +2792,33 @@ function restoreAnnotations(): void {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return;
-    const parsed = JSON.parse(raw) as {
-      annotations?: PdfAnnotationDef[];
-      formFields?: Record<string, string | boolean>;
-    };
-    if (parsed.annotations) {
-      for (const def of parsed.annotations) {
+
+    // Try new diff-based format first
+    const diff = deserializeDiff(raw);
+
+    // Merge baseline + diff
+    const merged = mergeAnnotations(pdfBaselineAnnotations, diff);
+    for (const def of merged) {
+      if (!annotationMap.has(def.id)) {
         annotationMap.set(def.id, { def, elements: [] });
       }
     }
-    if (parsed.formFields) {
-      for (const [k, v] of Object.entries(parsed.formFields)) {
-        formFieldValues.set(k, v);
-      }
+
+    // Restore form fields
+    for (const [k, v] of Object.entries(diff.formFields)) {
+      formFieldValues.set(k, v);
     }
-    // If we restored any data, we have pending local changes
-    if (annotationMap.size > 0 || formFieldValues.size > 0) {
+
+    // If we have user changes (diff is not empty), mark dirty
+    if (
+      diff.added.length > 0 ||
+      diff.removed.length > 0 ||
+      Object.keys(diff.formFields).length > 0
+    ) {
       isDirty = true;
     }
     log.info(
-      `Restored ${annotationMap.size} annotations, ${formFieldValues.size} form fields`,
+      `Restored ${annotationMap.size} annotations (${diff.added.length} added, ${diff.removed.length} removed), ${formFieldValues.size} form fields`,
     );
   } catch {
     // Parse error or unavailable
@@ -2956,32 +2929,6 @@ function syncFormValuesToStorage(): void {
 // PDF Download with Annotations
 // =============================================================================
 
-function cssColorToRgb(
-  color: string,
-): { r: number; g: number; b: number } | null {
-  // Parse hex colors
-  const hex = color.match(/^#([0-9a-f]{3,8})$/i);
-  if (hex) {
-    let h = hex[1];
-    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-    return {
-      r: parseInt(h.slice(0, 2), 16) / 255,
-      g: parseInt(h.slice(2, 4), 16) / 255,
-      b: parseInt(h.slice(4, 6), 16) / 255,
-    };
-  }
-  // Parse rgb/rgba
-  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-  if (rgbMatch) {
-    return {
-      r: parseInt(rgbMatch[1]) / 255,
-      g: parseInt(rgbMatch[2]) / 255,
-      b: parseInt(rgbMatch[3]) / 255,
-    };
-  }
-  return null;
-}
-
 async function downloadAnnotatedPdf(): Promise<void> {
   if (!pdfDocument) return;
   downloadBtn.disabled = true;
@@ -2991,246 +2938,22 @@ async function downloadAnnotatedPdf(): Promise<void> {
     // Get raw PDF bytes directly from pdf.js (already loaded in memory)
     const fullBytes = await pdfDocument.getData();
 
-    // Load with pdf-lib
-    const pdfDoc = await PDFDocument.load(fullBytes, {
-      ignoreEncryption: true,
-    });
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-    const pages = pdfDoc.getPages();
-
-    // Embed annotations
+    // Collect annotations to export (only user-added, not PDF baseline)
+    const annotations: PdfAnnotationDef[] = [];
+    const baselineIds = new Set(pdfBaselineAnnotations.map((a) => a.id));
     for (const tracked of annotationMap.values()) {
-      const def = tracked.def;
-      const pageIdx = def.page - 1;
-      if (pageIdx < 0 || pageIdx >= pages.length) continue;
-      const page = pages[pageIdx];
-
-      switch (def.type) {
-        case "highlight": {
-          const c = cssColorToRgb(def.color || "#ffff00") || {
-            r: 1,
-            g: 1,
-            b: 0,
-          };
-          for (const rect of def.rects) {
-            page.drawRectangle({
-              x: rect.x,
-              y: rect.y,
-              width: rect.width,
-              height: rect.height,
-              color: rgb(c.r, c.g, c.b),
-              opacity: 0.35,
-            });
-          }
-          break;
-        }
-        case "underline": {
-          const c = cssColorToRgb(def.color || "#ff0000") || {
-            r: 1,
-            g: 0,
-            b: 0,
-          };
-          for (const rect of def.rects) {
-            page.drawLine({
-              start: { x: rect.x, y: rect.y },
-              end: { x: rect.x + rect.width, y: rect.y },
-              thickness: 1.5,
-              color: rgb(c.r, c.g, c.b),
-            });
-          }
-          break;
-        }
-        case "strikethrough": {
-          const c = cssColorToRgb(def.color || "#ff0000") || {
-            r: 1,
-            g: 0,
-            b: 0,
-          };
-          for (const rect of def.rects) {
-            const midY = rect.y + rect.height / 2;
-            page.drawLine({
-              start: { x: rect.x, y: midY },
-              end: { x: rect.x + rect.width, y: midY },
-              thickness: 1.5,
-              color: rgb(c.r, c.g, c.b),
-            });
-          }
-          break;
-        }
-        case "note": {
-          const c = cssColorToRgb(def.color || "#ff9900") || {
-            r: 1,
-            g: 0.6,
-            b: 0,
-          };
-          // Draw a small note indicator and the content text
-          page.drawSquare({
-            x: def.x,
-            y: def.y - 10,
-            size: 10,
-            color: rgb(c.r, c.g, c.b),
-            opacity: 0.8,
-          });
-          if (def.content) {
-            page.drawText(def.content, {
-              x: def.x + 14,
-              y: def.y - 10,
-              size: 9,
-              font,
-              color: rgb(c.r, c.g, c.b),
-            });
-          }
-          break;
-        }
-        case "rectangle": {
-          const borderColor = cssColorToRgb(def.color || "#0066cc") || {
-            r: 0,
-            g: 0.4,
-            b: 0.8,
-          };
-          page.drawRectangle({
-            x: def.x,
-            y: def.y,
-            width: def.width,
-            height: def.height,
-            borderColor: rgb(borderColor.r, borderColor.g, borderColor.b),
-            borderWidth: 2,
-            color: def.fillColor
-              ? (() => {
-                  const fc = cssColorToRgb(def.fillColor);
-                  return fc ? rgb(fc.r, fc.g, fc.b) : undefined;
-                })()
-              : undefined,
-            opacity: def.fillColor ? 0.3 : undefined,
-            rotate: def.rotation ? degrees(-def.rotation) : undefined,
-          });
-          break;
-        }
-        case "freetext": {
-          const c = cssColorToRgb(def.color || "#000000") || {
-            r: 0,
-            g: 0,
-            b: 0,
-          };
-          page.drawText(def.content, {
-            x: def.x,
-            y: def.y,
-            size: def.fontSize || 12,
-            font,
-            color: rgb(c.r, c.g, c.b),
-          });
-          break;
-        }
-        case "stamp": {
-          const c = cssColorToRgb(def.color || "#cc0000") || {
-            r: 0.8,
-            g: 0,
-            b: 0,
-          };
-          const stampColor = rgb(c.r, c.g, c.b);
-          const fontSize = 24;
-          const textWidth = boldFont.widthOfTextAtSize(def.label, fontSize);
-          const padding = 8;
-          const rectW = textWidth + padding * 2;
-          const rectH = fontSize + padding * 2;
-
-          // CSS renders stamp with transformOrigin: center center, at
-          // pdfPointToScreen(def.x, def.y) which maps to the top-left of the
-          // element in screen space. In PDF coords def.y is the top of the stamp,
-          // so the rect goes from (def.x, def.y - rectH) to (def.x + rectW, def.y).
-          // The center is at (def.x + rectW/2, def.y - rectH/2).
-          const cx = def.x + rectW / 2;
-          const cy = def.y - rectH / 2;
-
-          if (def.rotation) {
-            // Rotate around center: translate to center, rotate, translate back
-            const rad = (-def.rotation * Math.PI) / 180;
-            const cos = Math.cos(rad);
-            const sin = Math.sin(rad);
-
-            // Rect corners relative to center
-            const rx = -rectW / 2;
-            const ry = -rectH / 2;
-            // Rotated bottom-left corner
-            const newX = cx + rx * cos - ry * sin;
-            const newY = cy + rx * sin + ry * cos;
-
-            page.drawRectangle({
-              x: newX,
-              y: newY,
-              width: rectW,
-              height: rectH,
-              borderColor: stampColor,
-              borderWidth: 3,
-              opacity: 0.6,
-              rotate: degrees(-def.rotation),
-            });
-
-            // Text position relative to center
-            const tx = -rectW / 2 + padding;
-            const ty = -rectH / 2 + padding - 4;
-            const newTx = cx + tx * cos - ty * sin;
-            const newTy = cy + tx * sin + ty * cos;
-
-            page.drawText(def.label, {
-              x: newTx,
-              y: newTy,
-              size: fontSize,
-              font: boldFont,
-              color: stampColor,
-              opacity: 0.6,
-              rotate: degrees(-def.rotation),
-            });
-          } else {
-            page.drawRectangle({
-              x: def.x,
-              y: def.y - rectH,
-              width: rectW,
-              height: rectH,
-              borderColor: stampColor,
-              borderWidth: 3,
-              opacity: 0.6,
-            });
-            page.drawText(def.label, {
-              x: def.x + padding,
-              y: def.y - fontSize - padding + 4,
-              size: fontSize,
-              font: boldFont,
-              color: stampColor,
-              opacity: 0.6,
-            });
-          }
-          break;
-        }
+      // Only export user-added annotations; baseline ones are already in the PDF
+      if (!baselineIds.has(tracked.def.id)) {
+        annotations.push(tracked.def);
       }
     }
 
-    // Apply form fills
-    if (formFieldValues.size > 0) {
-      try {
-        const form = pdfDoc.getForm();
-        for (const [name, value] of formFieldValues) {
-          try {
-            if (typeof value === "boolean") {
-              const checkbox = form.getCheckBox(name);
-              if (value) checkbox.check();
-              else checkbox.uncheck();
-            } else {
-              const textField = form.getTextField(name);
-              textField.setText(value);
-            }
-          } catch {
-            // Field not found or wrong type — skip
-          }
-        }
-      } catch {
-        // Form not available — skip
-      }
-    }
-
-    const pdfBytes = await pdfDoc.save();
+    // Build PDF with proper annotation objects
+    const pdfBytes = await buildAnnotatedPdfBytes(
+      fullBytes as Uint8Array,
+      annotations,
+      formFieldValues,
+    );
 
     // Use app.downloadFile if host supports it, otherwise fall back to <a> tag
     const hasEdits = annotationMap.size > 0 || formFieldValues.size > 0;
@@ -3240,9 +2963,7 @@ async function downloadAnnotatedPdf(): Promise<void> {
     // Convert to base64
     const base64 = uint8ArrayToBase64(pdfBytes);
 
-    // TODO: Re-enable capability check when host downloadFile is fixed:
     if (app.getHostCapabilities()?.downloadFile) {
-      // if (true) {
       const { isError } = await app.downloadFile({
         contents: [
           {
@@ -3278,14 +2999,6 @@ async function downloadAnnotatedPdf(): Promise<void> {
     downloadBtn.disabled = false;
     downloadBtn.title = "Download PDF";
   }
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
 }
 
 // Render state - prevents concurrent renders
@@ -4248,7 +3961,10 @@ app.ontoolresult = async (result: CallToolResult) => {
       ? ""
       : "none";
     // downloadBtn.style.display = "";
-    // Restore any persisted annotations
+
+    // Import annotations from the PDF to establish baseline
+    await loadBaselineAnnotations(document);
+    // Restore any persisted user diff
     restoreAnnotations();
 
     // Build field name → annotation ID mapping for form filling

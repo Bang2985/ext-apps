@@ -1,0 +1,810 @@
+/**
+ * PDF Annotation Helpers
+ *
+ * Pure functions for annotation persistence (diff-based model),
+ * color conversion, and PDF annotation dict creation using pdf-lib.
+ *
+ * The diff-based model stores only changes relative to the PDF's
+ * native annotations: additions, removals, and modifications.
+ * This keeps localStorage small and preserves round-trip fidelity.
+ */
+
+import {
+  PDFDocument,
+  PDFDict,
+  PDFName,
+  PDFArray,
+  PDFNumber,
+  PDFString,
+  PDFHexString,
+  StandardFonts,
+} from "pdf-lib";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface AnnotationBase {
+  id: string;
+  page: number;
+}
+
+export interface HighlightAnnotation extends AnnotationBase {
+  type: "highlight";
+  rects: Rect[];
+  color?: string;
+  content?: string;
+}
+
+export interface UnderlineAnnotation extends AnnotationBase {
+  type: "underline";
+  rects: Rect[];
+  color?: string;
+}
+
+export interface StrikethroughAnnotation extends AnnotationBase {
+  type: "strikethrough";
+  rects: Rect[];
+  color?: string;
+}
+
+export interface NoteAnnotation extends AnnotationBase {
+  type: "note";
+  x: number;
+  y: number;
+  content: string;
+  color?: string;
+}
+
+export interface RectangleAnnotation extends AnnotationBase {
+  type: "rectangle";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color?: string;
+  fillColor?: string;
+  rotation?: number;
+}
+
+export interface FreetextAnnotation extends AnnotationBase {
+  type: "freetext";
+  x: number;
+  y: number;
+  content: string;
+  fontSize?: number;
+  color?: string;
+}
+
+export interface StampAnnotation extends AnnotationBase {
+  type: "stamp";
+  x: number;
+  y: number;
+  label: string;
+  color?: string;
+  rotation?: number;
+}
+
+export type PdfAnnotationDef =
+  | HighlightAnnotation
+  | UnderlineAnnotation
+  | StrikethroughAnnotation
+  | NoteAnnotation
+  | RectangleAnnotation
+  | FreetextAnnotation
+  | StampAnnotation;
+
+// =============================================================================
+// Diff-Based Persistence Model
+// =============================================================================
+
+/**
+ * Represents changes relative to the PDF's native annotations.
+ * Only this diff is stored in localStorage, keeping it small.
+ */
+export interface AnnotationDiff {
+  /** Annotations created by the user (not in the original PDF) */
+  added: PdfAnnotationDef[];
+  /** PDF annotation ref strings that the user deleted */
+  removed: string[];
+  /** Form field values the user filled in */
+  formFields: Record<string, string | boolean>;
+}
+
+/** Create an empty diff */
+export function emptyDiff(): AnnotationDiff {
+  return { added: [], removed: [], formFields: {} };
+}
+
+/** Check if a diff has any changes */
+export function isDiffEmpty(diff: AnnotationDiff): boolean {
+  return (
+    diff.added.length === 0 &&
+    diff.removed.length === 0 &&
+    Object.keys(diff.formFields).length === 0
+  );
+}
+
+/** Serialize diff to JSON string for localStorage */
+export function serializeDiff(diff: AnnotationDiff): string {
+  return JSON.stringify(diff);
+}
+
+/** Deserialize diff from JSON string. Returns empty diff on error. */
+export function deserializeDiff(json: string): AnnotationDiff {
+  try {
+    const parsed = JSON.parse(json);
+    return {
+      added: Array.isArray(parsed.added) ? parsed.added : [],
+      removed: Array.isArray(parsed.removed) ? parsed.removed : [],
+      formFields:
+        parsed.formFields && typeof parsed.formFields === "object"
+          ? parsed.formFields
+          : {},
+    };
+  } catch {
+    return emptyDiff();
+  }
+}
+
+/**
+ * Merge PDF-native annotations with user diff to produce the final annotation set.
+ *
+ * @param pdfAnnotations - Annotations imported from the PDF file
+ * @param diff - User's local changes (additions, removals)
+ * @returns Merged annotation list
+ */
+export function mergeAnnotations(
+  pdfAnnotations: PdfAnnotationDef[],
+  diff: AnnotationDiff,
+): PdfAnnotationDef[] {
+  const removedSet = new Set(diff.removed);
+
+  // Start with PDF annotations, filtering out removed ones
+  const merged = pdfAnnotations.filter((a) => !removedSet.has(a.id));
+
+  // Add user-created annotations
+  // If an added annotation has the same ID as a PDF annotation, the added one wins
+  const addedIds = new Set(diff.added.map((a) => a.id));
+  const result = merged.filter((a) => !addedIds.has(a.id));
+  result.push(...diff.added);
+
+  return result;
+}
+
+/**
+ * Compute a diff given the PDF-native annotations and the current full set.
+ *
+ * @param pdfAnnotations - Original annotations from the PDF
+ * @param currentAnnotations - Current full annotation set (after user edits)
+ * @param formFields - Current form field values
+ * @returns The diff to persist
+ */
+export function computeDiff(
+  pdfAnnotations: PdfAnnotationDef[],
+  currentAnnotations: PdfAnnotationDef[],
+  formFields: Map<string, string | boolean>,
+): AnnotationDiff {
+  const pdfIds = new Set(pdfAnnotations.map((a) => a.id));
+  const currentIds = new Set(currentAnnotations.map((a) => a.id));
+
+  // Added: in current but not in PDF
+  const added = currentAnnotations.filter((a) => !pdfIds.has(a.id));
+
+  // Removed: in PDF but not in current
+  const removed = pdfAnnotations
+    .filter((a) => !currentIds.has(a.id))
+    .map((a) => a.id);
+
+  // Form fields
+  const formFieldsObj: Record<string, string | boolean> = {};
+  for (const [k, v] of formFields) {
+    formFieldsObj[k] = v;
+  }
+
+  return { added, removed, formFields: formFieldsObj };
+}
+
+// =============================================================================
+// Color Conversion
+// =============================================================================
+
+/**
+ * Parse a CSS color string to normalized RGB values (0-1 range).
+ * Supports hex (#rgb, #rrggbb, #rrggbbaa) and rgb()/rgba() notation.
+ */
+export function cssColorToRgb(
+  color: string,
+): { r: number; g: number; b: number } | null {
+  // Parse hex colors
+  const hex = color.match(/^#([0-9a-f]{3,8})$/i);
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return {
+      r: parseInt(h.slice(0, 2), 16) / 255,
+      g: parseInt(h.slice(2, 4), 16) / 255,
+      b: parseInt(h.slice(4, 6), 16) / 255,
+    };
+  }
+  // Parse rgb/rgba
+  const rgbMatch = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) {
+    return {
+      r: parseInt(rgbMatch[1]) / 255,
+      g: parseInt(rgbMatch[2]) / 255,
+      b: parseInt(rgbMatch[3]) / 255,
+    };
+  }
+  return null;
+}
+
+/** Default colors for each annotation type */
+export function defaultColor(type: PdfAnnotationDef["type"]): string {
+  switch (type) {
+    case "highlight":
+      return "#ffff00";
+    case "underline":
+    case "strikethrough":
+      return "#ff0000";
+    case "note":
+      return "#f5a623";
+    case "rectangle":
+      return "#0066cc";
+    case "freetext":
+      return "#333333";
+    case "stamp":
+      return "#cc0000";
+  }
+}
+
+// =============================================================================
+// PDF Annotation Dict Creation (pdf-lib low-level API)
+// =============================================================================
+
+/**
+ * Create a PDF color array [r, g, b] from a CSS color string.
+ * Falls back to the default color for the annotation type.
+ */
+function makePdfColor(
+  context: PDFDocument["context"],
+  cssColor: string | undefined,
+  annotType: PdfAnnotationDef["type"],
+): PDFArray {
+  const rgb = cssColorToRgb(cssColor || defaultColor(annotType));
+  const { r, g, b } = rgb || { r: 0, g: 0, b: 0 };
+  const arr = PDFArray.withContext(context);
+  arr.push(PDFNumber.of(r));
+  arr.push(PDFNumber.of(g));
+  arr.push(PDFNumber.of(b));
+  return arr;
+}
+
+/** Create a PDF /Rect array [x1, y1, x2, y2] */
+function makePdfRect(
+  context: PDFDocument["context"],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): PDFArray {
+  const arr = PDFArray.withContext(context);
+  arr.push(PDFNumber.of(x));
+  arr.push(PDFNumber.of(y));
+  arr.push(PDFNumber.of(x + width));
+  arr.push(PDFNumber.of(y + height));
+  return arr;
+}
+
+/**
+ * Create /QuadPoints array for markup annotations (Highlight, Underline, StrikeOut).
+ * Each rect → 8 numbers: x1,y1 (top-left), x2,y2 (top-right), x3,y3 (bottom-left), x4,y4 (bottom-right)
+ * PDF spec order: top-left, top-right, bottom-left, bottom-right
+ */
+function makeQuadPoints(
+  context: PDFDocument["context"],
+  rects: Rect[],
+): PDFArray {
+  const arr = PDFArray.withContext(context);
+  for (const r of rects) {
+    const x1 = r.x;
+    const y1 = r.y;
+    const x2 = r.x + r.width;
+    const y2 = r.y + r.height;
+    // QuadPoints order: top-left, top-right, bottom-left, bottom-right
+    arr.push(PDFNumber.of(x1));
+    arr.push(PDFNumber.of(y2)); // top-left
+    arr.push(PDFNumber.of(x2));
+    arr.push(PDFNumber.of(y2)); // top-right
+    arr.push(PDFNumber.of(x1));
+    arr.push(PDFNumber.of(y1)); // bottom-left
+    arr.push(PDFNumber.of(x2));
+    arr.push(PDFNumber.of(y1)); // bottom-right
+  }
+  return arr;
+}
+
+/** Compute bounding box of an array of rects */
+function boundingBox(rects: Rect[]): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  if (rects.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  for (const r of rects) {
+    minX = Math.min(minX, r.x);
+    minY = Math.min(minY, r.y);
+    maxX = Math.max(maxX, r.x + r.width);
+    maxY = Math.max(maxY, r.y + r.height);
+  }
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
+/**
+ * Add proper PDF annotation objects to a pdf-lib PDFDocument.
+ * Creates /Type /Annot dictionaries with correct /Subtype for each annotation type.
+ * These are real PDF annotations, editable in Acrobat/Preview.
+ */
+export async function addAnnotationDicts(
+  pdfDoc: PDFDocument,
+  annotations: PdfAnnotationDef[],
+): Promise<void> {
+  const context = pdfDoc.context;
+  const pages = pdfDoc.getPages();
+
+  for (const def of annotations) {
+    const pageIdx = def.page - 1;
+    if (pageIdx < 0 || pageIdx >= pages.length) continue;
+    const page = pages[pageIdx];
+
+    const dict = PDFDict.withContext(context);
+    dict.set(PDFName.of("Type"), PDFName.of("Annot"));
+
+    // Set /F (flags) = 4 (Print) so annotations print
+    dict.set(PDFName.of("F"), PDFNumber.of(4));
+
+    const color = makePdfColor(
+      context,
+      "color" in def ? def.color : undefined,
+      def.type,
+    );
+
+    switch (def.type) {
+      case "highlight":
+      case "underline":
+      case "strikethrough": {
+        const subtypeMap = {
+          highlight: "Highlight",
+          underline: "Underline",
+          strikethrough: "StrikeOut",
+        };
+        dict.set(PDFName.of("Subtype"), PDFName.of(subtypeMap[def.type]));
+
+        const bb = boundingBox(def.rects);
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, bb.x, bb.y, bb.w, bb.h),
+        );
+        dict.set(PDFName.of("QuadPoints"), makeQuadPoints(context, def.rects));
+        dict.set(PDFName.of("C"), color);
+
+        if (def.type === "highlight" && "content" in def && def.content) {
+          dict.set(PDFName.of("Contents"), PDFHexString.fromText(def.content));
+        }
+        break;
+      }
+
+      case "note": {
+        dict.set(PDFName.of("Subtype"), PDFName.of("Text"));
+        // Note icon is 24x24 points
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, def.x, def.y - 24, 24, 24),
+        );
+        dict.set(PDFName.of("Contents"), PDFHexString.fromText(def.content));
+        dict.set(PDFName.of("C"), color);
+        dict.set(PDFName.of("Name"), PDFName.of("Note"));
+        // Open = false (collapsed by default)
+        dict.set(PDFName.of("Open"), context.obj(false));
+        break;
+      }
+
+      case "rectangle": {
+        dict.set(PDFName.of("Subtype"), PDFName.of("Square"));
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, def.x, def.y, def.width, def.height),
+        );
+        dict.set(PDFName.of("C"), color);
+
+        // Border style
+        const bs = PDFDict.withContext(context);
+        bs.set(PDFName.of("Type"), PDFName.of("Border"));
+        bs.set(PDFName.of("W"), PDFNumber.of(2));
+        bs.set(PDFName.of("S"), PDFName.of("S")); // Solid
+        dict.set(PDFName.of("BS"), bs);
+
+        if (def.fillColor) {
+          const fc = cssColorToRgb(def.fillColor);
+          if (fc) {
+            const icArr = PDFArray.withContext(context);
+            icArr.push(PDFNumber.of(fc.r));
+            icArr.push(PDFNumber.of(fc.g));
+            icArr.push(PDFNumber.of(fc.b));
+            dict.set(PDFName.of("IC"), icArr);
+          }
+        }
+        break;
+      }
+
+      case "freetext": {
+        dict.set(PDFName.of("Subtype"), PDFName.of("FreeText"));
+        const fontSize = def.fontSize || 12;
+        // Estimate text dimensions
+        const textWidth = def.content.length * fontSize * 0.6;
+        const textHeight = fontSize * 1.4;
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(
+            context,
+            def.x,
+            def.y - textHeight,
+            textWidth,
+            textHeight,
+          ),
+        );
+        dict.set(PDFName.of("Contents"), PDFHexString.fromText(def.content));
+
+        // Default appearance string (DA) — required for FreeText
+        const rgb = cssColorToRgb(def.color || defaultColor("freetext"));
+        const { r, g, b } = rgb || { r: 0, g: 0, b: 0 };
+        dict.set(
+          PDFName.of("DA"),
+          PDFString.of(`${r} ${g} ${b} rg /Helv ${fontSize} Tf`),
+        );
+        break;
+      }
+
+      case "stamp": {
+        dict.set(PDFName.of("Subtype"), PDFName.of("Stamp"));
+        const fontSize = 24;
+        const textWidth = def.label.length * fontSize * 0.7;
+        const padding = 8;
+        const rectW = textWidth + padding * 2;
+        const rectH = fontSize + padding * 2;
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, def.x, def.y - rectH, rectW, rectH),
+        );
+        dict.set(PDFName.of("C"), color);
+
+        // Use a custom /Name for the stamp label
+        // Standard stamp names: Approved, Experimental, NotApproved, AsIs, Expired, etc.
+        // For custom labels, we use the label as the name
+        dict.set(PDFName.of("Name"), PDFName.of(def.label));
+        dict.set(PDFName.of("Contents"), PDFHexString.fromText(def.label));
+
+        // Create a simple appearance stream so the stamp text is visible
+        const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        const actualTextWidth = font.widthOfTextAtSize(def.label, fontSize);
+        const apRectW = actualTextWidth + padding * 2;
+        const apRectH = fontSize + padding * 2;
+
+        // Update rect with actual dimensions
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, def.x, def.y - apRectH, apRectW, apRectH),
+        );
+
+        // Build appearance stream content
+        const rgb = cssColorToRgb(def.color || defaultColor("stamp"));
+        const { r, g, b } = rgb || { r: 0.8, g: 0, b: 0 };
+        const streamContent = [
+          `${r} ${g} ${b} RG`, // stroke color
+          `${r} ${g} ${b} rg`, // fill color
+          `3 w`, // line width
+          `${padding} ${padding} ${apRectW - padding * 2} ${apRectH - padding * 2} re S`, // border rect
+          `BT`,
+          `/F1 ${fontSize} Tf`,
+          `${padding} ${padding + 4} Td`,
+          `(${def.label.replace(/[()\\]/g, "\\$&")}) Tj`,
+          `ET`,
+        ].join("\n");
+
+        // Create the appearance stream
+        const apStream = context.flateStream(streamContent, {
+          Type: "XObject",
+          Subtype: "Form",
+          BBox: [0, 0, apRectW, apRectH],
+          Resources: {
+            Font: { F1: font.ref },
+          },
+        });
+        const apRef = context.register(apStream);
+
+        // Create AP dictionary
+        const apDict = PDFDict.withContext(context);
+        apDict.set(PDFName.of("N"), apRef);
+        dict.set(PDFName.of("AP"), apDict);
+
+        // Apply rotation if specified
+        if (def.rotation) {
+          // PDF rotation for annotations is not directly supported via /Rotate
+          // on the annotation dict in the same way. We handle it through the
+          // appearance stream matrix instead. For simplicity, we skip rotation
+          // in the annotation dict since appearance streams handle display.
+        }
+        break;
+      }
+    }
+
+    // Register the annotation dict and add to page
+    const annotRef = context.register(dict);
+    page.node.addAnnot(annotRef);
+  }
+}
+
+/**
+ * Build annotated PDF bytes from the original document.
+ * Applies user annotations and form fills, returns Uint8Array of the new PDF.
+ */
+export async function buildAnnotatedPdfBytes(
+  pdfBytes: Uint8Array,
+  annotations: PdfAnnotationDef[],
+  formFields: Map<string, string | boolean>,
+): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+
+  // Add proper PDF annotation objects
+  await addAnnotationDicts(pdfDoc, annotations);
+
+  // Apply form fills
+  if (formFields.size > 0) {
+    try {
+      const form = pdfDoc.getForm();
+      for (const [name, value] of formFields) {
+        try {
+          if (typeof value === "boolean") {
+            const checkbox = form.getCheckBox(name);
+            if (value) checkbox.check();
+            else checkbox.uncheck();
+          } else {
+            const textField = form.getTextField(name);
+            textField.setText(value);
+          }
+        } catch {
+          // Field not found or wrong type — skip
+        }
+      }
+    } catch {
+      // Form not available — skip
+    }
+  }
+
+  return pdfDoc.save();
+}
+
+// =============================================================================
+// PDF.js Annotation Import
+// =============================================================================
+
+/**
+ * PDF.js annotation type constants (from AnnotationType enum).
+ * We only import types we support.
+ */
+const PDFJS_TYPE_MAP: Record<number, PdfAnnotationDef["type"]> = {
+  1: "note", // TEXT
+  3: "freetext", // FREETEXT
+  5: "rectangle", // SQUARE
+  9: "highlight", // HIGHLIGHT
+  10: "underline", // UNDERLINE
+  12: "strikethrough", // STRIKEOUT
+  13: "stamp", // STAMP
+};
+
+/**
+ * Convert a PDF.js annotation color array [r, g, b] (0-255) to CSS hex string.
+ */
+function pdfjsColorToHex(
+  color: Uint8ClampedArray | number[] | null | undefined,
+): string | undefined {
+  if (!color || color.length < 3) return undefined;
+  const r = Math.round(color[0]);
+  const g = Math.round(color[1]);
+  const b = Math.round(color[2]);
+  const hex = ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+  return `#${hex}`;
+}
+
+/**
+ * Convert a PDF.js annotation rect [x1, y1, x2, y2] to our Rect format.
+ */
+function pdfjsRectToRect(rect: number[]): Rect {
+  return {
+    x: Math.min(rect[0], rect[2]),
+    y: Math.min(rect[1], rect[3]),
+    width: Math.abs(rect[2] - rect[0]),
+    height: Math.abs(rect[3] - rect[1]),
+  };
+}
+
+/**
+ * Build a stable annotation ID from pdf.js annotation data.
+ * Uses the annotation's ref (PDF object reference) if available,
+ * otherwise falls back to page + index.
+ */
+function makeAnnotationId(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ann: any,
+  pageNum: number,
+  index: number,
+): string {
+  if (ann.ref) {
+    return `pdf-${ann.ref.num}-${ann.ref.gen}`;
+  }
+  if (ann.id) {
+    return `pdf-${ann.id}`;
+  }
+  return `pdf-${pageNum}-${index}`;
+}
+
+/**
+ * Convert a single PDF.js annotation object to our PdfAnnotationDef format.
+ * Returns null for unsupported annotation types.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function importPdfjsAnnotation(
+  ann: any,
+  pageNum: number,
+  index: number,
+): PdfAnnotationDef | null {
+  const ourType = PDFJS_TYPE_MAP[ann.annotationType];
+  if (!ourType) return null;
+
+  // Skip form widgets (they're handled separately by AnnotationLayer)
+  if (ann.annotationType === 20) return null;
+
+  const id = makeAnnotationId(ann, pageNum, index);
+  const color = pdfjsColorToHex(ann.color);
+
+  switch (ourType) {
+    case "highlight":
+    case "underline":
+    case "strikethrough": {
+      // PDF.js provides quadPoints as array of arrays [[x1,y1,x2,y2,...], ...]
+      // or rect as [x1,y1,x2,y2]
+      let rects: Rect[];
+      if (ann.quadPoints && ann.quadPoints.length > 0) {
+        rects = [];
+        for (const qp of ann.quadPoints) {
+          // Each quadPoint is [x1,y1,x2,y2,x3,y3,x4,y4]
+          // We need the bounding box
+          if (qp.length >= 8) {
+            const xs = [qp[0], qp[2], qp[4], qp[6]];
+            const ys = [qp[1], qp[3], qp[5], qp[7]];
+            const minX = Math.min(...xs);
+            const minY = Math.min(...ys);
+            const maxX = Math.max(...xs);
+            const maxY = Math.max(...ys);
+            rects.push({
+              x: minX,
+              y: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+            });
+          }
+        }
+      } else if (ann.rect) {
+        rects = [pdfjsRectToRect(ann.rect)];
+      } else {
+        return null;
+      }
+      if (rects.length === 0) return null;
+
+      const base = { id, page: pageNum, rects, color };
+      if (ourType === "highlight") {
+        return {
+          ...base,
+          type: "highlight",
+          content: ann.contentsObj?.str || ann.contents || undefined,
+        };
+      }
+      return { ...base, type: ourType } as PdfAnnotationDef;
+    }
+
+    case "note": {
+      if (!ann.rect) return null;
+      const rect = pdfjsRectToRect(ann.rect);
+      return {
+        type: "note",
+        id,
+        page: pageNum,
+        x: rect.x,
+        y: rect.y + rect.height, // PDF.js rect y is bottom; note uses top point
+        content: ann.contentsObj?.str || ann.contents || "",
+        color,
+      };
+    }
+
+    case "rectangle": {
+      if (!ann.rect) return null;
+      const rect = pdfjsRectToRect(ann.rect);
+      return {
+        type: "rectangle",
+        id,
+        page: pageNum,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        color,
+      };
+    }
+
+    case "freetext": {
+      if (!ann.rect) return null;
+      const rect = pdfjsRectToRect(ann.rect);
+      return {
+        type: "freetext",
+        id,
+        page: pageNum,
+        x: rect.x,
+        y: rect.y + rect.height,
+        content: ann.contentsObj?.str || ann.contents || "",
+        fontSize: ann.fontSize || 12,
+        color,
+      };
+    }
+
+    case "stamp": {
+      if (!ann.rect) return null;
+      const rect = pdfjsRectToRect(ann.rect);
+      return {
+        type: "stamp",
+        id,
+        page: pageNum,
+        x: rect.x,
+        y: rect.y + rect.height,
+        label: ann.name || ann.contentsObj?.str || ann.contents || "STAMP",
+        color,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Convert base64 string to Uint8Array.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * Convert Uint8Array to base64 string.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
