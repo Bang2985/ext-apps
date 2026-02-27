@@ -137,6 +137,11 @@ interface TrackedAnnotation {
 const annotationMap = new Map<string, TrackedAnnotation>();
 const formFieldValues = new Map<string, string | boolean>();
 
+// Dirty flag — tracks unsaved local changes
+let isDirty = false;
+/** Whether we're currently restoring annotations (suppress dirty flag). */
+let isRestoring = false;
+
 // Selection & interaction state
 const selectedAnnotationIds = new Set<string>();
 let focusedFieldName: string | null = null;
@@ -609,10 +614,21 @@ function showViewer() {
   viewerEl.style.display = "flex";
 }
 
+function setDirty(dirty: boolean): void {
+  if (isDirty === dirty) return;
+  isDirty = dirty;
+  updateTitleDisplay();
+}
+
+function updateTitleDisplay(): void {
+  const display = pdfTitle || pdfUrl;
+  titleEl.textContent = (isDirty ? "* " : "") + display;
+  titleEl.title = pdfUrl;
+}
+
 function updateControls() {
   // Show URL with CSS ellipsis, full URL as tooltip, clickable to open
-  titleEl.textContent = pdfUrl;
-  titleEl.title = pdfUrl;
+  updateTitleDisplay();
   titleEl.style.textDecoration = "underline";
   titleEl.style.cursor = "pointer";
   titleEl.onclick = () => app.openLink({ url: pdfUrl });
@@ -2782,6 +2798,7 @@ function annotationStorageKey(): string | null {
 }
 
 function persistAnnotations(): void {
+  if (!isRestoring) setDirty(true);
   const key = annotationStorageKey();
   if (!key) return;
   try {
@@ -2805,6 +2822,7 @@ function persistAnnotations(): void {
 function restoreAnnotations(): void {
   const key = annotationStorageKey();
   if (!key) return;
+  isRestoring = true;
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return;
@@ -2822,11 +2840,17 @@ function restoreAnnotations(): void {
         formFieldValues.set(k, v);
       }
     }
+    // If we restored any data, we have pending local changes
+    if (annotationMap.size > 0 || formFieldValues.size > 0) {
+      isDirty = true;
+    }
     log.info(
       `Restored ${annotationMap.size} annotations, ${formFieldValues.size} form fields`,
     );
   } catch {
     // Parse error or unavailable
+  } finally {
+    isRestoring = false;
   }
 }
 
@@ -3585,13 +3609,16 @@ async function toggleFullscreen() {
 }
 
 function updateFullscreenButton() {
-  if (currentDisplayMode === "fullscreen") {
-    fullscreenBtn.textContent = "⊠";
-    fullscreenBtn.title = "Exit fullscreen (Esc)";
-  } else {
-    fullscreenBtn.textContent = "⛶";
-    fullscreenBtn.title = "Toggle fullscreen";
-  }
+  const isFs = currentDisplayMode === "fullscreen";
+  const expandIcon = fullscreenBtn.querySelector(".expand-icon") as HTMLElement;
+  const collapseIcon = fullscreenBtn.querySelector(
+    ".collapse-icon",
+  ) as HTMLElement;
+  if (expandIcon) expandIcon.style.display = isFs ? "none" : "";
+  if (collapseIcon) collapseIcon.style.display = isFs ? "" : "none";
+  fullscreenBtn.title = isFs
+    ? "Exit fullscreen (Esc)"
+    : "Toggle fullscreen (⌘Enter)";
 }
 
 // Event listeners
@@ -3782,6 +3809,13 @@ document.addEventListener("keydown", (e) => {
     } else {
       undo();
     }
+    return;
+  }
+
+  // Ctrl/Cmd+Enter: toggle fullscreen
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    toggleFullscreen();
     return;
   }
 

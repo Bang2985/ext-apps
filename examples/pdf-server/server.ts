@@ -1492,8 +1492,10 @@ IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3
 
 **ANNOTATION** — add_annotations with array of annotation objects. Each needs: id (unique string), type, page (1-indexed).
 
-**COORDINATE SYSTEM**: PDF points (1pt = 1/72in), origin at BOTTOM-LEFT. X→right, Y→up.
-- Page size in model context (e.g. "612×792pt"). US Letter: top≈y=750, mid≈y=400, bottom≈y=50, left≈x=72, right≈x=540.
+**COORDINATE SYSTEM**: PDF points (1pt = 1/72in), origin at page BOTTOM-LEFT corner. X increases rightward, Y increases upward.
+- US Letter = 612×792pt. Margins: top≈y=742, bottom≈y=50, left≈x=72, right≈x=540, center≈(306, 396).
+- IMPORTANT: Rectangle/stamp x,y is the BOTTOM-LEFT corner. To place a 200×30 box at the TOP of the page: x=72, y=712, width=200, height=30 (top edge at y=742).
+- For highlights/underlines, each rect's y is the BOTTOM of the highlighted region.
 
 Annotation types:
 • highlight: rects:[{x,y,width,height}], color?, content? • underline: rects:[{x,y,w,h}], color?
