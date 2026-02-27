@@ -74,6 +74,25 @@ export interface RectangleAnnotation extends AnnotationBase {
   rotation?: number;
 }
 
+export interface CircleAnnotation extends AnnotationBase {
+  type: "circle";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color?: string;
+  fillColor?: string;
+}
+
+export interface LineAnnotation extends AnnotationBase {
+  type: "line";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color?: string;
+}
+
 export interface FreetextAnnotation extends AnnotationBase {
   type: "freetext";
   x: number;
@@ -98,6 +117,8 @@ export type PdfAnnotationDef =
   | StrikethroughAnnotation
   | NoteAnnotation
   | RectangleAnnotation
+  | CircleAnnotation
+  | LineAnnotation
   | FreetextAnnotation
   | StampAnnotation;
 
@@ -257,7 +278,10 @@ export function defaultColor(type: PdfAnnotationDef["type"]): string {
     case "note":
       return "#f5a623";
     case "rectangle":
+    case "circle":
       return "#0066cc";
+    case "line":
+      return "#333333";
     case "freetext":
       return "#333333";
     case "stamp":
@@ -421,8 +445,12 @@ export async function addAnnotationDicts(
         break;
       }
 
-      case "rectangle": {
-        dict.set(PDFName.of("Subtype"), PDFName.of("Square"));
+      case "rectangle":
+      case "circle": {
+        dict.set(
+          PDFName.of("Subtype"),
+          PDFName.of(def.type === "rectangle" ? "Square" : "Circle"),
+        );
         dict.set(
           PDFName.of("Rect"),
           makePdfRect(context, def.x, def.y, def.width, def.height),
@@ -446,6 +474,28 @@ export async function addAnnotationDicts(
             dict.set(PDFName.of("IC"), icArr);
           }
         }
+        break;
+      }
+
+      case "line": {
+        dict.set(PDFName.of("Subtype"), PDFName.of("Line"));
+        // Rect is bounding box of the line
+        const lx = Math.min(def.x1, def.x2);
+        const ly = Math.min(def.y1, def.y2);
+        const lw = Math.abs(def.x2 - def.x1);
+        const lh = Math.abs(def.y2 - def.y1);
+        dict.set(
+          PDFName.of("Rect"),
+          makePdfRect(context, lx, ly, lw || 1, lh || 1),
+        );
+        // Line endpoints
+        const lineArr = PDFArray.withContext(context);
+        lineArr.push(PDFNumber.of(def.x1));
+        lineArr.push(PDFNumber.of(def.y1));
+        lineArr.push(PDFNumber.of(def.x2));
+        lineArr.push(PDFNumber.of(def.y2));
+        dict.set(PDFName.of("L"), lineArr);
+        dict.set(PDFName.of("C"), color);
         break;
       }
 
@@ -607,7 +657,9 @@ export async function buildAnnotatedPdfBytes(
 const PDFJS_TYPE_MAP: Record<number, PdfAnnotationDef["type"]> = {
   1: "note", // TEXT
   3: "freetext", // FREETEXT
+  4: "line", // LINE
   5: "rectangle", // SQUARE
+  6: "circle", // CIRCLE
   9: "highlight", // HIGHLIGHT
   10: "underline", // UNDERLINE
   12: "strikethrough", // STRIKEOUT
@@ -738,17 +790,46 @@ export function importPdfjsAnnotation(
       };
     }
 
-    case "rectangle": {
+    case "rectangle":
+    case "circle": {
       if (!ann.rect) return null;
       const rect = pdfjsRectToRect(ann.rect);
       return {
-        type: "rectangle",
+        type: ourType,
         id,
         page: pageNum,
         x: rect.x,
         y: rect.y,
         width: rect.width,
         height: rect.height,
+        color,
+      } as PdfAnnotationDef;
+    }
+
+    case "line": {
+      // PDF.js LineAnnotation provides lineCoordinates [x1, y1, x2, y2]
+      if (ann.lineCoordinates && ann.lineCoordinates.length >= 4) {
+        return {
+          type: "line",
+          id,
+          page: pageNum,
+          x1: ann.lineCoordinates[0],
+          y1: ann.lineCoordinates[1],
+          x2: ann.lineCoordinates[2],
+          y2: ann.lineCoordinates[3],
+          color,
+        };
+      }
+      if (!ann.rect) return null;
+      const lineRect = pdfjsRectToRect(ann.rect);
+      return {
+        type: "line",
+        id,
+        page: pageNum,
+        x1: lineRect.x,
+        y1: lineRect.y,
+        x2: lineRect.x + lineRect.width,
+        y2: lineRect.y + lineRect.height,
         color,
       };
     }

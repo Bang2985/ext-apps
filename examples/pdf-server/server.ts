@@ -134,6 +134,26 @@ const RectangleAnnotation = AnnotationBase.extend({
   height: z.number(),
   color: z.string().optional(),
   fillColor: z.string().optional(),
+  rotation: z.number().optional(),
+});
+
+const CircleAnnotation = AnnotationBase.extend({
+  type: z.literal("circle"),
+  x: z.number(),
+  y: z.number(),
+  width: z.number(),
+  height: z.number(),
+  color: z.string().optional(),
+  fillColor: z.string().optional(),
+});
+
+const LineAnnotation = AnnotationBase.extend({
+  type: z.literal("line"),
+  x1: z.number(),
+  y1: z.number(),
+  x2: z.number(),
+  y2: z.number(),
+  color: z.string().optional(),
 });
 
 const FreetextAnnotation = AnnotationBase.extend({
@@ -160,6 +180,8 @@ const PdfAnnotationDef = z.discriminatedUnion("type", [
   StrikethroughAnnotation,
   NoteAnnotation,
   RectangleAnnotation,
+  CircleAnnotation,
+  LineAnnotation,
   FreetextAnnotation,
   StampAnnotation,
 ]);
@@ -173,6 +195,8 @@ const PdfAnnotationUpdate = z.union([
   RectangleAnnotation.partial().required({ id: true, type: true }),
   FreetextAnnotation.partial().required({ id: true, type: true }),
   StampAnnotation.partial().required({ id: true, type: true }),
+  CircleAnnotation.partial().required({ id: true, type: true }),
+  LineAnnotation.partial().required({ id: true, type: true }),
 ]);
 
 const FormField = z.object({
@@ -1500,7 +1524,8 @@ IMPORTANT: viewUUID must be the exact UUID returned by display_pdf (e.g. "a1b2c3
 Annotation types:
 • highlight: rects:[{x,y,width,height}], color?, content? • underline: rects:[{x,y,w,h}], color?
 • strikethrough: rects:[{x,y,w,h}], color? • note: x, y, content, color?
-• rectangle: x, y, width, height, color?, fillColor? • freetext: x, y, content, fontSize?, color?
+• rectangle: x, y, width, height, color?, fillColor?, rotation? • circle: x, y, width, height, color?, fillColor?
+• line: x1, y1, x2, y2, color? • freetext: x, y, content, fontSize?, color?
 • stamp: x, y, label (any text, e.g. APPROVED, DRAFT, CONFIDENTIAL), color?, rotation?
 
 TIP: For text annotations, prefer highlight_text (auto-finds text) over manual rects.

@@ -162,6 +162,7 @@ bun examples/pdf-server/main.ts --stdio ./papers/
 | `display_pdf`    | Model + UI | Display interactive viewer                            |
 | `interact`       | Model      | Navigate, annotate, search, extract pages, fill forms |
 | `read_pdf_bytes` | App only   | Stream PDF data in chunks                             |
+| `save_pdf`       | App only   | Save annotated PDF back to local file                 |
 
 ## Example Prompts
 
@@ -246,29 +247,55 @@ The API tests simulate a conversation where `display_pdf` has already been calle
 ## Architecture
 
 ```
-server.ts      # MCP server + tools
-main.ts        # CLI entry point
+server.ts                  # MCP server + tools
+main.ts                    # CLI entry point
 src/
-└── mcp-app.ts # Interactive viewer UI (PDF.js)
+├── mcp-app.ts             # Interactive viewer UI (PDF.js)
+├── pdf-annotations.ts     # Annotation types, diff model, PDF import/export
+└── pdf-annotations.test.ts # Unit tests for annotation module
 ```
 
 ## Key Patterns Shown
 
-| Pattern           | Implementation                              |
-| ----------------- | ------------------------------------------- |
-| App-only tools    | `_meta: { ui: { visibility: ["app"] } }`    |
-| Chunked responses | `hasMore` + `offset` pagination             |
-| Model context     | `app.updateModelContext()`                  |
-| Display modes     | `app.requestDisplayMode()`                  |
-| External links    | `app.openLink()`                            |
-| View persistence  | `viewUUID` + localStorage                   |
-| Theming           | `applyDocumentTheme()` + CSS `light-dark()` |
-| Annotations       | DOM overlays + pdf-lib embed on download    |
-| Command queue     | Server enqueues → client polls + processes  |
-| File download     | `app.downloadFile()` for annotated PDF      |
+| Pattern                       | Implementation                                                 |
+| ----------------------------- | -------------------------------------------------------------- |
+| App-only tools                | `_meta: { ui: { visibility: ["app"] } }`                       |
+| Chunked responses             | `hasMore` + `offset` pagination                                |
+| Model context                 | `app.updateModelContext()`                                     |
+| Display modes                 | `app.requestDisplayMode()`                                     |
+| External links                | `app.openLink()`                                               |
+| View persistence              | `viewUUID` + localStorage                                      |
+| Theming                       | `applyDocumentTheme()` + CSS `light-dark()`                    |
+| Annotations                   | DOM overlays synced with proper PDF annotation dicts           |
+| Annotation import             | Load existing PDF annotations via PDF.js `getAnnotations()`    |
+| Diff-based persistence        | localStorage stores only additions/removals vs PDF baseline    |
+| Proper PDF export             | pdf-lib low-level API creates real `/Type /Annot` dictionaries |
+| Save to file                  | App-only `save_pdf` tool writes annotated bytes back to disk   |
+| Dirty flag                    | `*` prefix on title when unsaved local changes exist           |
+| Command queue                 | Server enqueues → client polls + processes                     |
+| File download                 | `app.downloadFile()` for annotated PDF                         |
+| Floating panel with anchoring | Magnetic corner-snapping panel for annotation list             |
+| Drag, resize, rotate          | Interactive annotation handles with undo/redo                  |
+| Keyboard shortcuts            | Ctrl+Z/Y (undo/redo), Ctrl+S (save), Ctrl+F (search), ⌘Enter   |
+
+### Annotation Types
+
+Supported annotation types (synced with PDF.js):
+
+| Type            | Properties                                  | PDF Subtype  |
+| --------------- | ------------------------------------------- | ------------ |
+| `highlight`     | `rects`, `color?`, `content?`               | `/Highlight` |
+| `underline`     | `rects`, `color?`                           | `/Underline` |
+| `strikethrough` | `rects`, `color?`                           | `/StrikeOut` |
+| `note`          | `x`, `y`, `content`, `color?`               | `/Text`      |
+| `rectangle`     | `x`, `y`, `width`, `height`, `color?`, etc. | `/Square`    |
+| `circle`        | `x`, `y`, `width`, `height`, `color?`, etc. | `/Circle`    |
+| `line`          | `x1`, `y1`, `x2`, `y2`, `color?`            | `/Line`      |
+| `freetext`      | `x`, `y`, `content`, `fontSize?`, `color?`  | `/FreeText`  |
+| `stamp`         | `x`, `y`, `label`, `color?`, `rotation?`    | `/Stamp`     |
 
 ## Dependencies
 
-- `pdfjs-dist`: PDF rendering (frontend only)
-- `pdf-lib`: Client-side PDF modification for annotated download
+- `pdfjs-dist`: PDF rendering and annotation import (frontend only)
+- `pdf-lib`: Client-side PDF modification — creates proper PDF annotation dictionaries for export
 - `@modelcontextprotocol/ext-apps`: MCP Apps SDK

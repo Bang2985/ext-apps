@@ -21,6 +21,8 @@ import {
   type PdfAnnotationDef,
   type Rect,
   type RectangleAnnotation,
+  type CircleAnnotation,
+  type LineAnnotation,
   type StampAnnotation,
   type NoteAnnotation,
   type FreetextAnnotation,
@@ -1049,7 +1051,7 @@ function syncSidebarSelection(): void {
 }
 
 /** Types that support resize handles (need width/height). */
-const RESIZABLE_TYPES = new Set<string>(["rectangle"]);
+const RESIZABLE_TYPES = new Set<string>(["rectangle", "circle"]);
 /** Types that support rotation. */
 const ROTATABLE_TYPES = new Set<string>(["rectangle", "stamp"]);
 
@@ -1086,6 +1088,8 @@ function showHandles(tracked: TrackedAnnotation): void {
 
 const DRAGGABLE_TYPES = new Set<string>([
   "rectangle",
+  "circle",
+  "line",
   "freetext",
   "stamp",
   "note",
@@ -1200,7 +1204,12 @@ function applyMoveToDef(
   dx: number,
   dy: number,
 ): void {
-  if ("x" in def && "y" in def) {
+  if (def.type === "line") {
+    def.x1 += dx;
+    def.y1 += dy;
+    def.x2 += dx;
+    def.y2 += dy;
+  } else if ("x" in def && "y" in def) {
     def.x! += dx;
     def.y! += dy;
   }
@@ -1464,6 +1473,59 @@ function paintAnnotationsOnCanvas(
         ctx.restore();
         break;
       }
+
+      case "circle": {
+        const s = pdfRectToScreen(
+          { x: def.x, y: def.y, width: def.width, height: def.height },
+          viewport,
+        );
+        ctx.save();
+        if (def.fillColor) {
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = def.fillColor;
+          ctx.beginPath();
+          ctx.ellipse(
+            s.left + s.width / 2,
+            s.top + s.height / 2,
+            s.width / 2,
+            s.height / 2,
+            0,
+            0,
+            Math.PI * 2,
+          );
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(
+          s.left + s.width / 2,
+          s.top + s.height / 2,
+          s.width / 2,
+          s.height / 2,
+          0,
+          0,
+          Math.PI * 2,
+        );
+        ctx.stroke();
+        ctx.restore();
+        break;
+      }
+
+      case "line": {
+        const p1 = pdfPointToScreen(def.x1, def.y1, viewport);
+        const p2 = pdfPointToScreen(def.x2, def.y2, viewport);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(p1.left, p1.top);
+        ctx.lineTo(p2.left, p2.top);
+        ctx.stroke();
+        ctx.restore();
+        break;
+      }
     }
   }
 }
@@ -1548,6 +1610,10 @@ function renderAnnotation(
       return [renderFreetextAnnotation(def, viewport)];
     case "stamp":
       return [renderStampAnnotation(def, viewport)];
+    case "circle":
+      return [renderCircleAnnotation(def, viewport)];
+    case "line":
+      return [renderLineAnnotation(def, viewport)];
   }
 }
 
@@ -1659,6 +1725,47 @@ function renderStampAnnotation(
     el.style.transformOrigin = "center center";
   }
   el.textContent = def.label;
+  return el;
+}
+
+function renderCircleAnnotation(
+  def: CircleAnnotation,
+  viewport: { width: number; height: number; scale: number },
+): HTMLElement {
+  const screen = pdfRectToScreen(
+    { x: def.x, y: def.y, width: def.width, height: def.height },
+    viewport,
+  );
+  const el = document.createElement("div");
+  el.className = "annotation-circle";
+  el.style.left = `${screen.left}px`;
+  el.style.top = `${screen.top}px`;
+  el.style.width = `${screen.width}px`;
+  el.style.height = `${screen.height}px`;
+  if (def.color) el.style.borderColor = def.color;
+  if (def.fillColor) el.style.backgroundColor = def.fillColor;
+  return el;
+}
+
+function renderLineAnnotation(
+  def: LineAnnotation,
+  viewport: { width: number; height: number; scale: number },
+): HTMLElement {
+  const p1 = pdfPointToScreen(def.x1, def.y1, viewport);
+  const p2 = pdfPointToScreen(def.x2, def.y2, viewport);
+  const dx = p2.left - p1.left;
+  const dy = p2.top - p1.top;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  const angle = Math.atan2(dy, dx);
+
+  const el = document.createElement("div");
+  el.className = "annotation-line";
+  el.style.left = `${p1.left}px`;
+  el.style.top = `${p1.top}px`;
+  el.style.width = `${length}px`;
+  el.style.transform = `rotate(${angle}rad)`;
+  el.style.transformOrigin = "0 0";
+  if (def.color) el.style.borderColor = def.color;
   return el;
 }
 
@@ -1896,6 +2003,10 @@ function getAnnotationLabel(def: PdfAnnotationDef): string {
       return "Rectangle";
     case "stamp":
       return `Stamp: ${def.label}`;
+    case "circle":
+      return "Circle";
+    case "line":
+      return "Line";
   }
 }
 
@@ -1931,6 +2042,10 @@ function getAnnotationColor(def: PdfAnnotationDef): string {
       return "#333";
     case "stamp":
       return "#cc0000";
+    case "circle":
+      return "#0066cc";
+    case "line":
+      return "#333";
   }
 }
 
