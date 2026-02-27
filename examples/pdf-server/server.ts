@@ -1107,6 +1107,23 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           .record(z.string(), z.union([z.string(), z.boolean()]))
           .optional()
           .describe("Form field values filled by the user via elicitation"),
+        formFields: z
+          .array(
+            z.object({
+              name: z.string(),
+              type: z.string(),
+              page: z.number(),
+              label: z.string().optional(),
+              x: z.number(),
+              y: z.number(),
+              width: z.number(),
+              height: z.number(),
+            }),
+          )
+          .optional()
+          .describe(
+            "Form fields with bounding boxes in model coordinates (top-left origin)",
+          ),
       }),
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
@@ -1262,6 +1279,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           initialPage: page,
           totalBytes,
           ...(formFieldValues ? { formFieldValues } : {}),
+          ...(fieldInfo.length > 0 ? { formFields: fieldInfo } : {}),
         },
         _meta: {
           viewUUID: uuid,
