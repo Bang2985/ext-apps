@@ -1516,7 +1516,16 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
         if (unknownNames.length > 0) {
           parts.push(`Unknown field(s) skipped: ${unknownNames.join(", ")}`);
         }
-        if (knownFields && knownFields.size > 0) {
+        // Include full field listing so the model can correct its fill_form calls
+        const info = viewFieldInfo.get(uuid);
+        if (info && info.length > 0) {
+          const fieldLines = info.map((f) => {
+            const label = f.label ? ` "${f.label}"` : "";
+            const nameStr = f.name || "(unnamed)";
+            return `  p${f.page}: ${nameStr}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}`;
+          });
+          parts.push(`All form fields:\n${fieldLines.join("\n")}`);
+        } else if (knownFields && knownFields.size > 0) {
           parts.push(`Valid field names: ${[...knownFields].join(", ")}`);
         }
         description = parts.join(". ");

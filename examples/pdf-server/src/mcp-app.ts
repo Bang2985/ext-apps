@@ -4350,6 +4350,9 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         }
         // Re-render to show updated form values (handles fields on other pages)
         renderPage();
+        // Update sidebar badge and panel to reflect new form field values
+        updateAnnotationsBadge();
+        renderAnnotationPanel();
         break;
       case "get_pages":
         // Handle async — don't block other commands
