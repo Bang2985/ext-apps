@@ -15,7 +15,7 @@ import {
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/spec.types.js";
 import * as pdfjsLib from "pdfjs-dist";
-import { AnnotationLayer, TextLayer } from "pdfjs-dist";
+import { AnnotationLayer, AnnotationMode, TextLayer } from "pdfjs-dist";
 import "pdfjs-dist/web/pdf_viewer.css";
 import {
   type PdfAnnotationDef,
@@ -40,7 +40,6 @@ import "./global.css";
 import "./mcp-app.css";
 
 const MAX_MODEL_CONTEXT_LENGTH = 15000;
-const MAX_MODEL_CONTEXT_UPDATE_IMAGE_DIMENSION = 768; // Max screenshot dimension
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.mjs",
@@ -834,42 +833,15 @@ async function updatePageContext() {
     // Add screenshot if host supports image content
     if (app.getHostCapabilities()?.updateModelContext?.image) {
       try {
-        // Scale down to reduce token usage (tokens depend on dimensions)
-        const sourceCanvas = canvasEl;
-        const screenshotScale = Math.min(
-          1,
-          MAX_MODEL_CONTEXT_UPDATE_IMAGE_DIMENSION /
-            Math.max(sourceCanvas.width, sourceCanvas.height),
-        );
-        const targetWidth = Math.round(sourceCanvas.width * screenshotScale);
-        const targetHeight = Math.round(sourceCanvas.height * screenshotScale);
-
-        const tempCanvas = document.createElement("canvas");
-        tempCanvas.width = targetWidth;
-        tempCanvas.height = targetHeight;
-        const ctx = tempCanvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(sourceCanvas, 0, 0, targetWidth, targetHeight);
-          // Paint annotations on top so the model can see them
-          const dpr = window.devicePixelRatio || 1;
-          const screenshotVp = {
-            width: targetWidth,
-            height: targetHeight,
-            scale: scale * screenshotScale * dpr,
-          };
-          paintAnnotationsOnCanvas(ctx, currentPage, screenshotVp);
-          const dataUrl = tempCanvas.toDataURL("image/jpeg", 0.85);
-          const base64Data = dataUrl.split(",")[1];
-          if (base64Data) {
-            contentBlocks.push({
-              type: "image",
-              data: base64Data,
-              mimeType: "image/jpeg",
-            });
-            log.info(
-              `Added screenshot to model context (${targetWidth}x${targetHeight})`,
-            );
-          }
+        // Render offscreen with ENABLE_STORAGE so filled form fields are visible
+        const base64Data = await renderPageOffscreen(currentPage);
+        if (base64Data) {
+          contentBlocks.push({
+            type: "image",
+            data: base64Data,
+            mimeType: "image/jpeg",
+          });
+          log.info("Added screenshot to model context");
         }
       } catch (err) {
         log.info("Failed to capture screenshot:", err);
@@ -2782,8 +2754,14 @@ async function renderPageOffscreen(pageNum: number): Promise<string> {
   const ctx = canvas.getContext("2d")!;
   ctx.scale(dpr, dpr);
 
+  // Render with ENABLE_STORAGE so filled form fields appear on the canvas
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (page.render as any)({ canvasContext: ctx, viewport }).promise;
+  await (page.render as any)({
+    canvasContext: ctx,
+    viewport,
+    annotationMode: AnnotationMode.ENABLE_STORAGE,
+    annotationStorage: pdfDocument.annotationStorage,
+  }).promise;
 
   // Paint annotations on top so the model can see them
   paintAnnotationsOnCanvas(ctx, pageNum, {
