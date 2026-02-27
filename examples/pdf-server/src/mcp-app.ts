@@ -139,7 +139,6 @@ const formFieldValues = new Map<string, string | boolean>();
 
 // Selection & interaction state
 const selectedAnnotationIds = new Set<string>();
-let interactionMode: "resize" | "rotate" = "resize";
 let focusedFieldName: string | null = null;
 
 // Undo/Redo
@@ -1040,7 +1039,6 @@ function selectAnnotation(id: string | null, additive = false): void {
       h.remove();
     }
     selectedAnnotationIds.clear();
-    interactionMode = "resize";
   }
 
   if (id) {
@@ -1098,17 +1096,20 @@ function syncSidebarSelection(): void {
   }
 }
 
-/** Types that support toggling between resize and rotate via double-click. */
-const RESIZABLE_TYPES = new Set<string>(["rectangle", "stamp"]);
+/** Types that support resize handles (need width/height). */
+const RESIZABLE_TYPES = new Set<string>(["rectangle"]);
+/** Types that support rotation. */
+const ROTATABLE_TYPES = new Set<string>(["rectangle", "stamp"]);
 
 function showHandles(tracked: TrackedAnnotation): void {
   const def = tracked.def;
-  if (!RESIZABLE_TYPES.has(def.type) || tracked.elements.length === 0) return;
+  if (tracked.elements.length === 0) return;
+  if (!RESIZABLE_TYPES.has(def.type) && !ROTATABLE_TYPES.has(def.type)) return;
 
   const el = tracked.elements[0];
-  const hasWidthHeight = "width" in def && "height" in def;
 
-  if (interactionMode === "resize" && hasWidthHeight) {
+  // Resize handles (corners) for types with width/height
+  if (RESIZABLE_TYPES.has(def.type) && "width" in def && "height" in def) {
     for (const corner of ["nw", "ne", "sw", "se"] as const) {
       const handle = document.createElement("div");
       handle.className = `annotation-handle ${corner}`;
@@ -1116,8 +1117,10 @@ function showHandles(tracked: TrackedAnnotation): void {
       setupResizeHandle(handle, tracked, corner);
       el.appendChild(handle);
     }
-  } else {
-    // Rotate mode (or fallback for types without width/height)
+  }
+
+  // Rotate handle for rotatable types
+  if (ROTATABLE_TYPES.has(def.type)) {
     const handle = document.createElement("div");
     handle.className = "annotation-handle-rotate";
     setupRotateHandle(handle, tracked);
@@ -1158,15 +1161,18 @@ function setupAnnotationInteraction(
     }
   });
 
-  // Double-click to toggle resize/rotate mode (for applicable types)
-  if (RESIZABLE_TYPES.has(tracked.def.type)) {
-    el.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      interactionMode = interactionMode === "resize" ? "rotate" : "resize";
-      // Re-render handles
-      selectAnnotation(tracked.def.id);
+  // Double-click to send message to modify annotation (same as sidebar card)
+  el.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    selectAnnotation(tracked.def.id);
+    const label = getAnnotationLabel(tracked.def);
+    const previewText = getAnnotationPreview(tracked.def);
+    const desc = previewText ? `${label}: ${previewText}` : label;
+    app.sendMessage({
+      role: "user",
+      content: [{ type: "text", text: `update ${desc}: ` }],
     });
-  }
+  });
 }
 
 function startDrag(e: MouseEvent, tracked: TrackedAnnotation): void {
