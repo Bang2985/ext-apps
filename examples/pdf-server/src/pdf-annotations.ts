@@ -618,45 +618,47 @@ export async function addAnnotationDicts(
       case "stamp": {
         dict.set(PDFName.of("Subtype"), PDFName.of("Stamp"));
         const fontSize = 24;
-        const textWidth = def.label.length * fontSize * 0.7;
-        const padding = 8;
-        const rectW = textWidth + padding * 2;
-        const rectH = fontSize + padding * 2;
-        dict.set(
-          PDFName.of("Rect"),
-          makePdfRect(context, def.x, def.y - rectH, rectW, rectH),
-        );
+        // Match CSS padding: 4px top/bottom, 12px left/right
+        const padX = 12;
+        const padY = 4;
+
         dict.set(PDFName.of("C"), color);
 
-        // Use a custom /Name for the stamp label
-        // Standard stamp names: Approved, Experimental, NotApproved, AsIs, Expired, etc.
-        // For custom labels, we use the label as the name
-        dict.set(PDFName.of("Name"), PDFName.of(def.label));
+        // Use a non-standard /Name so viewers like Preview.app don't
+        // substitute their own built-in stamp graphic
+        dict.set(PDFName.of("Name"), PDFName.of("#custom"));
         dict.set(PDFName.of("Contents"), PDFHexString.fromText(def.label));
 
         // Create a simple appearance stream so the stamp text is visible
         const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
         const actualTextWidth = font.widthOfTextAtSize(def.label, fontSize);
-        const apRectW = actualTextWidth + padding * 2;
-        const apRectH = fontSize + padding * 2;
+        const apRectW = actualTextWidth + padX * 2;
+        const apRectH = fontSize + padY * 2;
 
-        // Update rect with actual dimensions
+        // Set rect to match appearance stream dimensions
         dict.set(
           PDFName.of("Rect"),
           makePdfRect(context, def.x, def.y - apRectH, apRectW, apRectH),
         );
 
-        // Build appearance stream content
+        // Build appearance stream content matching the CSS rendering:
+        // - 3pt border stroke
+        // - 0.6 opacity
+        // - text baseline positioned to visually center in the box
         const rgb = cssColorToRgb(def.color || defaultColor("stamp"));
         const { r, g, b } = rgb || { r: 0.8, g: 0, b: 0 };
+        // Font descent ≈ 20% of font size for Helvetica
+        const descent = fontSize * 0.2;
+        const textBaselineY = padY + descent;
         const streamContent = [
+          `/GS0 gs`, // match CSS opacity: 0.6
           `${r} ${g} ${b} RG`, // stroke color
           `${r} ${g} ${b} rg`, // fill color
-          `3 w`, // line width
-          `${padding} ${padding} ${apRectW - padding * 2} ${apRectH - padding * 2} re S`, // border rect
+          `3 w`, // line width (matches CSS border: 3px)
+          `1.5 1.5 ${apRectW - 3} ${apRectH - 3} re S`, // border rect inset by half line width
           `BT`,
           `/F1 ${fontSize} Tf`,
-          `${padding} ${padding + 4} Td`,
+          `${padX} ${textBaselineY} Td`,
           `(${def.label.replace(/[()\\]/g, "\\$&")}) Tj`,
           `ET`,
         ].join("\n");
@@ -676,16 +678,34 @@ export async function addAnnotationDicts(
           rotationMatrix = [cos, sin, -sin, cos, tx, ty];
         }
 
+        // Create ExtGState for opacity (ca = fill opacity, CA = stroke opacity)
+        const gsDict = PDFDict.withContext(context);
+        gsDict.set(PDFName.of("Type"), PDFName.of("ExtGState"));
+        gsDict.set(PDFName.of("ca"), PDFNumber.of(0.6));
+        gsDict.set(PDFName.of("CA"), PDFNumber.of(0.6));
+        const gsRef = context.register(gsDict);
+
+        // Build Resources dict with Font and ExtGState
+        const stampResDict = PDFDict.withContext(context);
+        const fontResDict = PDFDict.withContext(context);
+        fontResDict.set(PDFName.of("F1"), font.ref);
+        stampResDict.set(PDFName.of("Font"), fontResDict);
+        const gsResDict = PDFDict.withContext(context);
+        gsResDict.set(PDFName.of("GS0"), gsRef);
+        stampResDict.set(PDFName.of("ExtGState"), gsResDict);
+
         // Create the appearance stream
         const apStream = context.flateStream(streamContent, {
           Type: "XObject",
           Subtype: "Form",
           BBox: [0, 0, apRectW, apRectH],
-          Resources: {
-            Font: { F1: font.ref },
-          },
           ...(rotationMatrix ? { Matrix: rotationMatrix } : {}),
         });
+
+        // Attach Resources to the stream dict
+        const apStreamDict = (apStream as any).dict || apStream;
+        apStreamDict.set(PDFName.of("Resources"), stampResDict);
+
         const apRef = context.register(apStream);
 
         // Create AP dictionary
