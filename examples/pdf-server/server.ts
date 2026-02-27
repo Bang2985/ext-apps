@@ -183,8 +183,15 @@ const ImageAnnotation = AnnotationBase.extend({
   imageData: z
     .string()
     .optional()
-    .describe("Base64-encoded PNG or JPEG image data (no data: prefix)"),
-  imageUrl: z.string().optional().describe("URL or file path to the image"),
+    .describe(
+      "Base64-encoded PNG or JPEG image data (no data: prefix). Prefer imageUrl with a file path instead of encoding images yourself.",
+    ),
+  imageUrl: z
+    .string()
+    .optional()
+    .describe(
+      "File path or HTTPS URL to the image. NO data: URIs — use imageData for raw base64. Prefer file paths over encoding images yourself.",
+    ),
   mimeType: z
     .string()
     .optional()
@@ -1810,7 +1817,7 @@ Annotation types:
 • rectangle: x, y, width, height, color?, fillColor?, rotation? • circle: x, y, width, height, color?, fillColor?
 • line: x1, y1, x2, y2, color? • freetext: x, y, content, fontSize?, color?
 • stamp: x, y, label (any text, e.g. APPROVED, DRAFT, CONFIDENTIAL), color?, rotation?
-• image: imageUrl or imageData (base64 PNG/JPEG), x?, y?, width?, height?, mimeType?, rotation?, aspect? — places an image (signature, logo, etc.) on the page. imageUrl can be a local file path or HTTP(S) URL; the server fetches and embeds it automatically. Width/height auto-detected from image if omitted.
+• image: imageUrl or imageData, x?, y?, width?, height?, mimeType?, rotation?, aspect? — places an image (signature, logo, etc.) on the page. imageUrl accepts a local file path or HTTPS URL (NO data: URIs). Do NOT base64-encode images yourself — just pass the file path via imageUrl and the server fetches and embeds it. Width/height auto-detected if omitted.
 
 TIP: For text annotations, prefer highlight_text (auto-finds text) over manual rects.
 
