@@ -1594,30 +1594,25 @@ function annDetails(d: AnnotationDef): string {
   }
 }
 
-/**
- * Format annotations as Markdown: a summary table, then a section per
- * annotation that has a description (so multi-line markdown renders properly).
- */
+/** Format annotations as a Markdown table (Description column added when any annotation has one). */
 function annotationsToMarkdown(annotations: TrackedAnnotation[]): string {
-  const lines = [
-    "| # | Type | ID | Label | Details | Color |",
-    "| --- | --- | --- | --- | --- | --- |",
-  ];
-  const descSections: string[] = [];
+  const hasDesc = annotations.some((t) => t.def.description);
+  const hdr = hasDesc
+    ? "| # | Type | ID | Label | Details | Color | Description |"
+    : "| # | Type | ID | Label | Details | Color |";
+  const sep = hasDesc
+    ? "| --- | --- | --- | --- | --- | --- | --- |"
+    : "| --- | --- | --- | --- | --- | --- |";
+  const lines = [hdr, sep];
   for (let i = 0; i < annotations.length; i++) {
     const d = annotations[i].def;
-    lines.push(
-      `| ${i + 1} | ${d.type} | ${d.id} | ${d.label || ""} | ${annDetails(d)} | ${d.color || (d.type === "marker" ? "red" : "blue")} |`,
-    );
-    if (d.description) {
-      descSections.push(`### ${d.label || d.id}\n\n${d.description}`);
-    }
+    const desc = (d.description || "")
+      .replace(/\|/g, "\\|")
+      .replace(/\n/g, "<br>");
+    const base = `| ${i + 1} | ${d.type} | ${d.id} | ${d.label || ""} | ${annDetails(d)} | ${d.color || (d.type === "marker" ? "red" : "blue")} |`;
+    lines.push(hasDesc ? `${base} ${desc} |` : base);
   }
-  let md = lines.join("\n");
-  if (descSections.length > 0) {
-    md += "\n\n" + descSections.join("\n\n");
-  }
-  return md;
+  return lines.join("\n");
 }
 
 /**
@@ -1706,15 +1701,28 @@ async function copyAnnotations(): Promise<void> {
 
   // Rich HTML for pasting into docs: table + GeoJSON in a <details>
   const geojson = annotationsToGeoJSON(anns);
+  const esc = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const hasDesc = anns.some((t) => t.def.description);
   const rows = anns
-    .map(
-      (t, i) =>
-        `<tr><td>${i + 1}</td><td>${t.def.type}</td><td>${t.def.id}</td><td>${t.def.label || ""}</td><td>${annDetails(t.def)}</td><td>${t.def.color || (t.def.type === "marker" ? "red" : "blue")}</td></tr>`,
-    )
+    .map((t, i) => {
+      const d = t.def;
+      const cells = [
+        i + 1,
+        esc(d.type),
+        esc(d.id),
+        esc(d.label || ""),
+        esc(annDetails(d)),
+        esc(d.color || (d.type === "marker" ? "red" : "blue")),
+      ];
+      if (hasDesc) cells.push(esc(d.description || "").replace(/\n/g, "<br>"));
+      return `<tr>${cells.map((c) => `<td>${c}</td>`).join("")}</tr>`;
+    })
     .join("\n");
+  const thDesc = hasDesc ? "<th>Description</th>" : "";
   const html =
-    `<table>\n<tr><th>#</th><th>Type</th><th>ID</th><th>Label</th><th>Details</th><th>Color</th></tr>\n${rows}\n</table>\n` +
-    `<details><summary>GeoJSON</summary><pre><code>${geojson.replace(/</g, "&lt;")}</code></pre></details>`;
+    `<table>\n<tr><th>#</th><th>Type</th><th>ID</th><th>Label</th><th>Details</th><th>Color</th>${thDesc}</tr>\n${rows}\n</table>\n` +
+    `<details><summary>GeoJSON</summary><pre><code>${esc(geojson)}</code></pre></details>`;
 
   try {
     await navigator.clipboard.write([
