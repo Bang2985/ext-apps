@@ -2522,7 +2522,8 @@ app.ontoolresult = async (result) => {
   }
 
   // Start polling for commands now that we have viewUUID
-  if (viewUUID) {
+  // (skip if the server explicitly disabled interaction)
+  if (viewUUID && result._meta?.interactEnabled !== false) {
     startPolling();
   }
 };

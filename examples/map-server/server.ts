@@ -286,11 +286,20 @@ async function geocodeWithNominatim(query: string): Promise<NominatimResult[]> {
   return response.json() as Promise<NominatimResult[]>;
 }
 
+export interface CreateServerOptions {
+  /**
+   * When `true`, the `interact` and `poll_map_commands` tools are not registered.
+   * Use this for distributed/stateless deployments where the in-memory command
+   * queue would not work (e.g. serverless, multi-replica).
+   */
+  disableInteract?: boolean;
+}
+
 /**
  * Creates a new MCP server instance with tools and resources registered.
  * Each HTTP session needs its own server instance because McpServer only supports one transport.
  */
-export function createServer(): McpServer {
+export function createServer(options?: CreateServerOptions): McpServer {
   const server = new McpServer({
     name: "CesiumJS Map Server",
     version: "1.0.0",
@@ -349,8 +358,9 @@ export function createServer(): McpServer {
     "show-map",
     {
       title: "Show Map",
-      description:
-        "Display an interactive world map. Specify the view with either a bounding box (`west`/`south`/`east`/`north`) or a center point (`latitude`/`longitude`) with optional `radiusKm` (default 50). Optionally pass initial `annotations` (markers, routes, areas, circles). For a single location the map already centers there, so a marker is redundant unless you need a label.",
+      description: options?.disableInteract
+        ? "Display a world map. Specify the view with either a bounding box (`west`/`south`/`east`/`north`) or a center point (`latitude`/`longitude`) with optional `radiusKm` (default 50). Optionally pass initial `annotations` (markers, routes, areas, circles). For a single location the map already centers there, so a marker is redundant unless you need a label."
+        : "Display an interactive world map. Specify the view with either a bounding box (`west`/`south`/`east`/`north`) or a center point (`latitude`/`longitude`) with optional `radiusKm` (default 50). Optionally pass initial `annotations` (markers, routes, areas, circles). For a single location the map already centers there, so a marker is redundant unless you need a label.",
       inputSchema: {
         west: z
           .number()
@@ -479,224 +489,233 @@ export function createServer(): McpServer {
           ? ` with ${initialAnnotations.length} annotation(s)`
           : "";
 
+      const interactSuffix = options?.disableInteract
+        ? ""
+        : ". Use the interact tool with this viewUUID to navigate, add annotations, etc.";
+
       return {
         content: [
           {
             type: "text",
-            text: `Displaying globe (viewUUID: ${uuid}) at: W:${bbox.west.toFixed(4)}, S:${bbox.south.toFixed(4)}, E:${bbox.east.toFixed(4)}, N:${bbox.north.toFixed(4)}${label ? ` (${label})` : ""}${annotationSummary}. Use the interact tool with this viewUUID to navigate, add annotations, etc.`,
+            text: `Displaying globe (viewUUID: ${uuid}) at: W:${bbox.west.toFixed(4)}, S:${bbox.south.toFixed(4)}, E:${bbox.east.toFixed(4)}, N:${bbox.north.toFixed(4)}${label ? ` (${label})` : ""}${annotationSummary}${interactSuffix}`,
           },
         ],
         _meta: {
           viewUUID: uuid,
           ...(initialAnnotations.length > 0 ? { initialAnnotations } : {}),
+          ...(options?.disableInteract ? { interactEnabled: false } : {}),
         },
       };
     },
   );
 
-  // interact tool - send actions to an existing map view
-  server.registerTool(
-    "interact",
-    {
-      title: "Interact with Map",
-      description: `Send an action to an existing map view. Actions are queued and batched.
+  if (!options?.disableInteract) {
+    // interact tool - send actions to an existing map view
+    server.registerTool(
+      "interact",
+      {
+        title: "Interact with Map",
+        description: `Send an action to an existing map view. Actions are queued and batched.
 
 Actions:
 - navigate: Fly/jump to a bounding box. Requires \`west\`, \`south\`, \`east\`, \`north\`. Optional: \`fly\` (default true), \`label\`.
 - add: Add annotations (markers, routes, areas, circles). Requires \`annotations\` array.
 - update: Update existing annotations. Requires \`annotations\` array with \`id\` + \`type\` and fields to change.
 - remove: Remove annotations by id. Requires \`ids\` array.`,
-      inputSchema: {
-        viewUUID: z
-          .string()
-          .describe("The viewUUID of the map (from show-map result)"),
-        action: z
-          .enum(["navigate", "add", "update", "remove"])
-          .describe("Action to perform"),
-        // navigate fields
-        west: z
-          .number()
-          .optional()
-          .describe("Western longitude, -180 to 180 (for navigate)"),
-        south: z
-          .number()
-          .optional()
-          .describe("Southern latitude, -90 to 90 (for navigate)"),
-        east: z
-          .number()
-          .optional()
-          .describe("Eastern longitude, -180 to 180 (for navigate)"),
-        north: z
-          .number()
-          .optional()
-          .describe("Northern latitude, -90 to 90 (for navigate)"),
-        fly: z
-          .boolean()
-          .optional()
-          .default(true)
-          .describe("Animate camera flight (for navigate, default true)"),
-        label: z.string().optional().describe("Label text (for navigate)"),
-        // add annotations
-        annotations: z
-          .array(AnnotationSchema)
-          .optional()
-          .describe("Annotations to add (for add action)"),
-        // update annotations
-        updates: z
-          .array(AnnotationUpdateSchema)
-          .optional()
-          .describe(
-            "Annotation updates with id + type + changed fields (for update action)",
-          ),
-        // remove annotations
-        ids: z
-          .array(z.string())
-          .optional()
-          .describe("Annotation ids to remove (for remove action)"),
+        inputSchema: {
+          viewUUID: z
+            .string()
+            .describe("The viewUUID of the map (from show-map result)"),
+          action: z
+            .enum(["navigate", "add", "update", "remove"])
+            .describe("Action to perform"),
+          // navigate fields
+          west: z
+            .number()
+            .optional()
+            .describe("Western longitude, -180 to 180 (for navigate)"),
+          south: z
+            .number()
+            .optional()
+            .describe("Southern latitude, -90 to 90 (for navigate)"),
+          east: z
+            .number()
+            .optional()
+            .describe("Eastern longitude, -180 to 180 (for navigate)"),
+          north: z
+            .number()
+            .optional()
+            .describe("Northern latitude, -90 to 90 (for navigate)"),
+          fly: z
+            .boolean()
+            .optional()
+            .default(true)
+            .describe("Animate camera flight (for navigate, default true)"),
+          label: z.string().optional().describe("Label text (for navigate)"),
+          // add annotations
+          annotations: z
+            .array(AnnotationSchema)
+            .optional()
+            .describe("Annotations to add (for add action)"),
+          // update annotations
+          updates: z
+            .array(AnnotationUpdateSchema)
+            .optional()
+            .describe(
+              "Annotation updates with id + type + changed fields (for update action)",
+            ),
+          // remove annotations
+          ids: z
+            .array(z.string())
+            .optional()
+            .describe("Annotation ids to remove (for remove action)"),
+        },
       },
-    },
-    async ({
-      viewUUID: uuid,
-      action,
-      west,
-      south,
-      east,
-      north,
-      fly,
-      label,
-      annotations,
-      updates,
-      ids,
-    }): Promise<CallToolResult> => {
-      switch (action) {
-        case "navigate":
-          if (west == null || south == null || east == null || north == null)
+      async ({
+        viewUUID: uuid,
+        action,
+        west,
+        south,
+        east,
+        north,
+        fly,
+        label,
+        annotations,
+        updates,
+        ids,
+      }): Promise<CallToolResult> => {
+        switch (action) {
+          case "navigate":
+            if (west == null || south == null || east == null || north == null)
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "navigate requires `west`, `south`, `east`, `north`",
+                  },
+                ],
+                isError: true,
+              };
+            enqueueCommand(uuid, {
+              type: "navigate",
+              west,
+              south,
+              east,
+              north,
+              label,
+              fly,
+            });
             return {
               content: [
                 {
                   type: "text",
-                  text: "navigate requires `west`, `south`, `east`, `north`",
+                  text: `Queued: navigate to W:${west.toFixed(4)}, S:${south.toFixed(4)}, E:${east.toFixed(4)}, N:${north.toFixed(4)}${label ? ` (${label})` : ""}`,
                 },
               ],
-              isError: true,
             };
-          enqueueCommand(uuid, {
-            type: "navigate",
-            west,
-            south,
-            east,
-            north,
-            label,
-            fly,
-          });
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Queued: navigate to W:${west.toFixed(4)}, S:${south.toFixed(4)}, E:${east.toFixed(4)}, N:${north.toFixed(4)}${label ? ` (${label})` : ""}`,
-              },
-            ],
-          };
 
-        case "add": {
-          if (!annotations || annotations.length === 0)
+          case "add": {
+            if (!annotations || annotations.length === 0)
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "add requires a non-empty `annotations` array",
+                  },
+                ],
+                isError: true,
+              };
+            enqueueCommand(uuid, { type: "add", annotations });
+            const types = [...new Set(annotations.map((a) => a.type))].join(
+              ", ",
+            );
             return {
               content: [
                 {
                   type: "text",
-                  text: "add requires a non-empty `annotations` array",
+                  text: `Added ${annotations.length} annotation(s) (${types})`,
                 },
               ],
+            };
+          }
+
+          case "update": {
+            if (!updates || updates.length === 0)
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "update requires a non-empty `updates` array",
+                  },
+                ],
+                isError: true,
+              };
+            enqueueCommand(uuid, { type: "update", annotations: updates });
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Queued: update ${updates.length} annotation(s)`,
+                },
+              ],
+            };
+          }
+
+          case "remove":
+            if (!ids || ids.length === 0)
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: "remove requires a non-empty `ids` array",
+                  },
+                ],
+                isError: true,
+              };
+            enqueueCommand(uuid, { type: "remove", ids });
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Queued: remove ${ids.length} annotation(s)`,
+                },
+              ],
+            };
+
+          default:
+            return {
+              content: [{ type: "text", text: `Unknown action: ${action}` }],
               isError: true,
             };
-          enqueueCommand(uuid, { type: "add", annotations });
-          const types = [...new Set(annotations.map((a) => a.type))].join(", ");
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Added ${annotations.length} annotation(s) (${types})`,
-              },
-            ],
-          };
         }
-
-        case "update": {
-          if (!updates || updates.length === 0)
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "update requires a non-empty `updates` array",
-                },
-              ],
-              isError: true,
-            };
-          enqueueCommand(uuid, { type: "update", annotations: updates });
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Queued: update ${updates.length} annotation(s)`,
-              },
-            ],
-          };
-        }
-
-        case "remove":
-          if (!ids || ids.length === 0)
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "remove requires a non-empty `ids` array",
-                },
-              ],
-              isError: true,
-            };
-          enqueueCommand(uuid, { type: "remove", ids });
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Queued: remove ${ids.length} annotation(s)`,
-              },
-            ],
-          };
-
-        default:
-          return {
-            content: [{ type: "text", text: `Unknown action: ${action}` }],
-            isError: true,
-          };
-      }
-    },
-  );
-
-  // poll_map_commands - app-only tool for polling pending commands
-  registerAppTool(
-    server,
-    "poll_map_commands",
-    {
-      title: "Poll Map Commands",
-      description: "Poll for pending commands for a map view",
-      inputSchema: {
-        viewUUID: z.string().describe("The viewUUID of the map"),
       },
-      _meta: { ui: { visibility: ["app"] } },
-    },
-    async ({ viewUUID: uuid }): Promise<CallToolResult> => {
-      // If commands are queued, wait a fixed window to let more accumulate
-      if (commandQueues.has(uuid)) {
-        await new Promise((r) => setTimeout(r, POLL_BATCH_WAIT_MS));
-      }
-      const commands = dequeueCommands(uuid);
-      return {
-        content: [{ type: "text", text: `${commands.length} command(s)` }],
-        structuredContent: { commands },
-      };
-    },
-  );
+    );
+
+    // poll_map_commands - app-only tool for polling pending commands
+    registerAppTool(
+      server,
+      "poll_map_commands",
+      {
+        title: "Poll Map Commands",
+        description: "Poll for pending commands for a map view",
+        inputSchema: {
+          viewUUID: z.string().describe("The viewUUID of the map"),
+        },
+        _meta: { ui: { visibility: ["app"] } },
+      },
+      async ({ viewUUID: uuid }): Promise<CallToolResult> => {
+        // If commands are queued, wait a fixed window to let more accumulate
+        if (commandQueues.has(uuid)) {
+          await new Promise((r) => setTimeout(r, POLL_BATCH_WAIT_MS));
+        }
+        const commands = dequeueCommands(uuid);
+        return {
+          content: [{ type: "text", text: `${commands.length} command(s)` }],
+          structuredContent: { commands },
+        };
+      },
+    );
+  } // end if (!disableInteract)
 
   // geocode tool - searches for places using Nominatim (no UI)
   server.registerTool(
