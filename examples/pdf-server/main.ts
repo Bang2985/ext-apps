@@ -141,9 +141,9 @@ async function main() {
   console.error(`[pdf-server] Ready (${urls.length} URL(s) configured)`);
 
   if (stdio) {
-    await startStdioServer(createServer);
+    await startStdioServer(() => createServer({ enableInteract: true }));
   } else {
-    await startStreamableHTTPServer(createServer);
+    await startStreamableHTTPServer(() => createServer());
   }
 }
 

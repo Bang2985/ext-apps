@@ -957,16 +957,16 @@ async function extractFormSchema(
 
 export interface CreateServerOptions {
   /**
-   * Disable the `interact` tool and related command-queue infrastructure.
-   * Use this for distributed deployments where the command queue (in-memory)
-   * cannot be shared across server instances.
-   * When true, the server only exposes `list_pdfs` and `display_pdf` (read-only).
+   * Enable the `interact` tool and related command-queue infrastructure
+   * (in-memory command queue, `poll_pdf_commands`, `submit_page_data`).
+   * Only suitable for single-instance deployments (e.g. stdio transport).
+   * Defaults to false — server exposes only `list_pdfs` and `display_pdf` (read-only).
    */
-  disableInteract?: boolean;
+  enableInteract?: boolean;
 }
 
 export function createServer(options?: CreateServerOptions): McpServer {
-  const disableInteract = options?.disableInteract ?? false;
+  const disableInteract = !(options?.enableInteract ?? false);
   const server = new McpServer({ name: "PDF Server", version: "2.0.0" });
 
   // Fetch roots on initialization and subscribe to changes
