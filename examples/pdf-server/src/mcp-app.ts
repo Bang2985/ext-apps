@@ -2582,14 +2582,7 @@ function createFormFieldCard(
   deleteBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     formFieldValues.delete(name);
-    if (pdfDocument) {
-      const ids = fieldNameToIds.get(name);
-      if (ids) {
-        for (const id of ids) {
-          pdfDocument.annotationStorage.remove(id);
-        }
-      }
-    }
+    clearFieldInStorage(name);
     updateAnnotationsBadge();
     renderAnnotationPanel();
     renderPage();
@@ -2835,6 +2828,31 @@ function clearAnnotationMap(): void {
   annotationMap.clear();
 }
 
+/**
+ * Push a field's defaultValue (/DV) into annotationStorage so the widget
+ * renders cleared. annotationStorage.remove() only drops our override —
+ * the widget reverts to the PDF's /V (the stored value), not /DV.
+ *
+ * Widget IDs come from page.getAnnotations(); field metadata (types,
+ * defaultValue) comes from getFieldObjects(). We match them by field name.
+ */
+function clearFieldInStorage(name: string): void {
+  if (!pdfDocument) return;
+  const ids = fieldNameToIds.get(name);
+  if (!ids) return;
+  const storage = pdfDocument.annotationStorage;
+  const meta = cachedFieldObjects?.[name];
+  // defaultValue is per-field, not per-widget — take from first non-parent entry
+  const dv =
+    meta?.find((f) => f.defaultValue != null)?.defaultValue ??
+    meta?.[0]?.defaultValue ??
+    "";
+  const type = meta?.find((f) => f.type)?.type;
+  const clearValue =
+    type === "checkbox" || type === "radiobutton" ? (dv ?? "Off") : (dv ?? "");
+  for (const id of ids) storage.setValue(id, { value: clearValue });
+}
+
 /** Remove all user-sourced entries from annotationStorage, leaving the
  *  PDF's own stored values intact. */
 function clearUserFormStorage(): void {
@@ -2889,22 +2907,11 @@ function resetToBaseline(): void {
 function clearAllItems(): void {
   clearAnnotationMap();
 
-  if (pdfDocument && cachedFieldObjects) {
-    const storage = pdfDocument.annotationStorage;
-    for (const name of new Set([
-      ...formFieldValues.keys(),
-      ...pdfBaselineFormValues.keys(),
-    ])) {
-      const fields = cachedFieldObjects[name];
-      const ids = fieldNameToIds.get(name);
-      if (!fields || !ids) continue;
-      for (let i = 0; i < ids.length; i++) {
-        const f = fields[i] ?? fields[0];
-        // Normalise defaultValue: null/undefined → "", "Off" for toggles stays
-        const dv = f?.defaultValue ?? "";
-        storage.setValue(ids[i], { value: dv });
-      }
-    }
+  for (const name of new Set([
+    ...formFieldValues.keys(),
+    ...pdfBaselineFormValues.keys(),
+  ])) {
+    clearFieldInStorage(name);
   }
   formFieldValues.clear();
 
@@ -3317,7 +3324,16 @@ function importFieldValue(fieldArr: any[]): string | boolean | null {
   return String(v);
 }
 
-/** Build mapping from field names (used by fill_form) to annotation IDs (used by annotationStorage). */
+/**
+ * Build mapping from field names (used by fill_form) to widget annotation IDs
+ * (used by annotationStorage).
+ *
+ * CRITICAL: getFieldObjects() returns field-dictionary IDs (the /T tree),
+ * but annotationStorage is keyed by WIDGET annotation IDs (what
+ * page.getAnnotations() returns). The two differ for PDFs where fields and
+ * their widget /Kids are separate objects. Using the wrong key makes all
+ * storage writes silently miss.
+ */
 async function buildFieldNameMap(
   doc: pdfjsLib.PDFDocumentProxy,
 ): Promise<void> {
@@ -3327,82 +3343,75 @@ async function buildFieldNameMap(
   fieldNameToOrder.clear();
   cachedFieldObjects = null;
   pdfBaselineFormValues.clear();
+
+  // getFieldObjects() gives us types, current values (/V), and defaults (/DV).
+  // We DON'T use its .id — that's the field dict ref, not the widget annot ref.
   try {
-    const fieldObjects = await doc.getFieldObjects();
-    cachedFieldObjects = fieldObjects as Record<string, any[]> | null;
-    if (fieldObjects) {
-      for (const [name, fields] of Object.entries(fieldObjects)) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const fieldArr = fields as any[];
-        fieldNameToIds.set(
-          name,
-          fieldArr.map((f) => f.id),
-        );
-        const firstField = fieldArr[0];
-        // Store page number (0-based in PDF.js field objects → 1-based for us)
-        if (firstField && typeof firstField.page === "number") {
-          fieldNameToPage.set(name, firstField.page + 1);
-        }
-        // Import baseline value (already saved in the PDF). Skip button-type
-        // fields and empty/Off values that represent "unfilled".
-        const v = importFieldValue(fieldArr);
-        if (v !== null) {
-          pdfBaselineFormValues.set(name, v);
-          // Seed current state from baseline so the panel shows it. A
-          // restored localStorage diff (applied later in restoreAnnotations)
-          // will overwrite specific fields the user changed.
-          if (!formFieldValues.has(name)) formFieldValues.set(name, v);
-        }
-      }
-    }
+    cachedFieldObjects =
+      ((await doc.getFieldObjects()) as Record<string, any[]> | null) ?? null;
   } catch {
-    // getFieldObjects may fail on some PDFs — fall back to no mapping
+    // getFieldObjects may fail on some PDFs
   }
 
-  // Collect human-readable labels (alternativeText / TU) from per-page annotations,
-  // since getFieldObjects() doesn't include alternativeText.
-  if (fieldNameToIds.size > 0) {
-    const pagesToScan = new Set(fieldNameToPage.values());
-    // If no pages known, scan all
-    if (pagesToScan.size === 0) {
-      for (let i = 1; i <= doc.numPages; i++) pagesToScan.add(i);
-    }
+  // Scan every page's widget annotations to collect the CORRECT storage keys,
+  // plus labels, pages, and positions (which getFieldObjects() lacks anyway).
+  const fieldPositions: Array<{ name: string; page: number; y: number }> = [];
+  for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    let annotations;
     try {
-      // Collect field positions for ordering: sort by page, then top-to-bottom (descending Y)
-      const fieldPositions: Array<{ name: string; page: number; y: number }> =
-        [];
-      for (const pageNum of [...pagesToScan].sort((a, b) => a - b)) {
-        const page = await doc.getPage(pageNum);
-        const annotations = await page.getAnnotations();
-        for (const ann of annotations) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const a = ann as any;
-          if (a.fieldName && a.alternativeText) {
-            fieldNameToLabel.set(a.fieldName, a.alternativeText);
-          }
-          if (a.fieldName && a.rect) {
-            fieldPositions.push({
-              name: a.fieldName,
-              page: pageNum,
-              y: a.rect[3], // top Y in PDF coords
-            });
-          }
-        }
-      }
-      // Sort by page ascending, then Y descending (top-to-bottom on page)
-      fieldPositions.sort((a, b) => a.page - b.page || b.y - a.y);
-      const seen = new Set<string>();
-      let idx = 0;
-      for (const fp of fieldPositions) {
-        if (!seen.has(fp.name)) {
-          seen.add(fp.name);
-          fieldNameToOrder.set(fp.name, idx++);
-        }
-      }
+      const page = await doc.getPage(pageNum);
+      annotations = await page.getAnnotations();
     } catch {
-      // Annotation iteration may fail on some PDFs
+      continue;
+    }
+    for (const ann of annotations) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const a = ann as any;
+      if (!a.fieldName || !a.id) continue;
+
+      // Widget annotation ID — this is what annotationStorage keys by
+      const ids = fieldNameToIds.get(a.fieldName) ?? [];
+      ids.push(a.id);
+      fieldNameToIds.set(a.fieldName, ids);
+
+      if (!fieldNameToPage.has(a.fieldName)) {
+        fieldNameToPage.set(a.fieldName, pageNum);
+      }
+      if (a.alternativeText) {
+        fieldNameToLabel.set(a.fieldName, a.alternativeText);
+      }
+      if (a.rect) {
+        fieldPositions.push({ name: a.fieldName, page: pageNum, y: a.rect[3] });
+      }
     }
   }
+
+  // Ordering: page ascending, then Y descending (top-to-bottom on page)
+  fieldPositions.sort((a, b) => a.page - b.page || b.y - a.y);
+  const seen = new Set<string>();
+  let idx = 0;
+  for (const fp of fieldPositions) {
+    if (!seen.has(fp.name)) {
+      seen.add(fp.name);
+      fieldNameToOrder.set(fp.name, idx++);
+    }
+  }
+
+  // Import baseline values from getFieldObjects() (the only place .value lives)
+  if (cachedFieldObjects) {
+    for (const [name, fieldArr] of Object.entries(cachedFieldObjects)) {
+      if (!fieldNameToIds.has(name)) continue; // no widget → not rendered
+      const v = importFieldValue(fieldArr);
+      if (v !== null) {
+        pdfBaselineFormValues.set(name, v);
+        // Seed current state from baseline so the panel shows it. A
+        // restored localStorage diff (applied in restoreAnnotations) will
+        // overwrite specific fields the user changed.
+        if (!formFieldValues.has(name)) formFieldValues.set(name, v);
+      }
+    }
+  }
+
   log.info(`Built field name map: ${fieldNameToIds.size} fields`);
 }
 
