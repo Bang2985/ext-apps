@@ -4183,6 +4183,15 @@ async function loadPdfProgressively(
     }
   }
 
+  if (!Number.isInteger(fileTotalBytes) || fileTotalBytes <= 0) {
+    // If this is missing, PDFDataRangeTransport.length is NaN → worker's
+    // ChunkedStream is sized 0 → every chunk fails with "Bad end offset: N".
+    throw new Error(
+      `Invalid totalBytes (${fileTotalBytes}) from display_pdf result — ` +
+        `server/viewer bundle mismatch? Rebuild with 'npm run build'.`,
+    );
+  }
+
   // Create transport with total file size, no initial data — PDF.js will request what it needs
   const transport = new AppRangeTransport(fileTotalBytes, null);
 
