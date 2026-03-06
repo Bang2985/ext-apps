@@ -190,6 +190,9 @@ const annotationsPanelCountEl = document.getElementById(
 const annotationsPanelCloseBtn = document.getElementById(
   "annotation-panel-close",
 ) as HTMLButtonElement;
+const annotationsPanelResetBtn = document.getElementById(
+  "annotation-panel-reset",
+) as HTMLButtonElement;
 const annotationsPanelClearAllBtn = document.getElementById(
   "annotation-panel-clear-all",
 ) as HTMLButtonElement;
@@ -2311,6 +2314,8 @@ function renderAnnotationPanel(): void {
   if (!annotationPanelOpen) return;
 
   annotationsPanelCountEl.textContent = String(sidebarItemCount());
+  annotationsPanelResetBtn.disabled = !isDirty;
+  annotationsPanelClearAllBtn.disabled = sidebarItemCount() === 0;
 
   // Group annotations by page, sorted by Y position within each page
   const byPage = new Map<number, TrackedAnnotation[]>();
@@ -2814,30 +2819,81 @@ function initAnnotationPanel(): void {
   // Toggle button
   annotationsBtn.addEventListener("click", toggleAnnotationPanel);
   annotationsPanelCloseBtn.addEventListener("click", toggleAnnotationPanel);
+  annotationsPanelResetBtn.addEventListener("click", resetToBaseline);
   annotationsPanelClearAllBtn.addEventListener("click", clearAllItems);
 
   updateAnnotationsBadge();
 }
 
-function clearAllItems(): void {
-  // Clear all annotations
+/** Remove the DOM elements backing every annotation and clear the map. */
+function clearAnnotationMap(): void {
   for (const [, tracked] of annotationMap) {
     for (const el of tracked.elements) el.remove();
   }
   annotationMap.clear();
+}
 
-  // Clear all form field values
+/** Remove all user-sourced entries from annotationStorage, leaving the
+ *  PDF's own stored values intact. */
+function clearUserFormStorage(): void {
+  if (!pdfDocument) return;
+  for (const [name] of formFieldValues) {
+    if (pdfBaselineFormValues.has(name)) continue; // PDF-native — leave alone
+    const ids = fieldNameToIds.get(name);
+    if (ids) for (const id of ids) pdfDocument.annotationStorage.remove(id);
+  }
+}
+
+/**
+ * Revert to what's in the PDF file: restore baseline annotations, restore
+ * baseline form values, discard all user edits. Result: diff is empty, clean.
+ */
+function resetToBaseline(): void {
+  clearAnnotationMap();
+  for (const def of pdfBaselineAnnotations) {
+    annotationMap.set(def.id, { def: { ...def }, elements: [] });
+  }
+
+  clearUserFormStorage();
+  formFieldValues.clear();
+  for (const [name, value] of pdfBaselineFormValues) {
+    formFieldValues.set(name, value);
+  }
+
+  undoStack.length = 0;
+  redoStack.length = 0;
+  selectedAnnotationIds.clear();
+
+  updateAnnotationsBadge();
+  persistAnnotations(); // diff is now empty → setDirty(false)
+  renderPage();
+  renderAnnotationPanel();
+}
+
+/**
+ * Remove everything, including annotations and form values that came from
+ * the PDF file. Result: diff is non-empty (baseline items are "removed"),
+ * dirty — saving writes a stripped PDF.
+ */
+function clearAllItems(): void {
+  clearAnnotationMap();
+
+  // Clear all form field values from storage — user AND baseline.
+  // Baseline values revert to the field's defaultValue.
   if (pdfDocument) {
-    for (const [name] of formFieldValues) {
+    for (const name of new Set([
+      ...formFieldValues.keys(),
+      ...pdfBaselineFormValues.keys(),
+    ])) {
       const ids = fieldNameToIds.get(name);
-      if (ids) {
-        for (const id of ids) {
-          pdfDocument.annotationStorage.remove(id);
-        }
-      }
+      if (ids) for (const id of ids) pdfDocument.annotationStorage.remove(id);
     }
   }
   formFieldValues.clear();
+
+  undoStack.length = 0;
+  redoStack.length = 0;
+  selectedAnnotationIds.clear();
 
   updateAnnotationsBadge();
   persistAnnotations();
@@ -3333,11 +3389,16 @@ async function buildFieldNameMap(
   log.info(`Built field name map: ${fieldNameToIds.size} fields`);
 }
 
-/** Sync formFieldValues into pdfDocument.annotationStorage so AnnotationLayer renders pre-filled values. */
+/** Sync formFieldValues into pdfDocument.annotationStorage so AnnotationLayer renders pre-filled values.
+ *  Skips values that match the PDF's baseline — those are already in storage
+ *  in pdf.js's native format (which may differ from our string/bool repr,
+ *  e.g. checkbox stores "Yes" not `true`). Overwriting with our normalised
+ *  form can break the Reset button's ability to restore defaults. */
 function syncFormValuesToStorage(): void {
   if (!pdfDocument || fieldNameToIds.size === 0) return;
   const storage = pdfDocument.annotationStorage;
   for (const [name, value] of formFieldValues) {
+    if (pdfBaselineFormValues.get(name) === value) continue;
     const ids = fieldNameToIds.get(name);
     if (ids) {
       for (const id of ids) {
