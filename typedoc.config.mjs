@@ -45,6 +45,7 @@ const config = {
       "https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx",
   },
   hostedBaseUrl: "https://apps.extensions.modelcontextprotocol.io/api/",
+  customCss: "./docs/mcp-theme.css",
   out: "docs/api",
   plugin: [
     "typedoc-github-theme",

@@ -168,10 +168,26 @@ export function load(app) {
       `<link rel="apple-touch-icon" href="${base}favicons/apple-touch-icon.png" type="image/png" sizes="180x180"/>`,
     ].join("\n");
 
-    // Inject JSON-LD and favicons before </head>
+    // Move custom.css to load after all theme stylesheets so overrides win the cascade
+    const customCssLink = page.contents.match(
+      /<link rel="stylesheet" href="[^"]*custom\.css"\/>/,
+    );
+    if (customCssLink) {
+      page.contents = page.contents.replace(customCssLink[0], "");
+    }
+
+    // Inject favicons, relocated custom CSS, and JSON-LD before </head>
+    const headInjections = [
+      faviconTags,
+      customCssLink ? customCssLink[0] : "",
+      jsonLdScript,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
     page.contents = page.contents.replace(
       "</head>",
-      faviconTags + "\n" + jsonLdScript + "\n</head>",
+      headInjections + "\n</head>",
     );
   });
 
