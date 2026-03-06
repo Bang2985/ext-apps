@@ -10,6 +10,7 @@ import { Renderer } from "typedoc";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import * as htmlparser2 from "htmlparser2";
 
 const SITE_NAME = "MCP Apps";
 
@@ -30,7 +31,7 @@ function toSlug(filename) {
 
 /**
  * Extract a plain-text description from the rendered HTML body.
- * Takes the first meaningful paragraph text, strips tags, and truncates.
+ * Parses the first content paragraph using htmlparser2 and truncates.
  * @param {string} html
  * @returns {string}
  */
@@ -48,10 +49,11 @@ function extractDescription(html) {
   if (!paragraphs) return "";
 
   for (const p of paragraphs) {
-    const text = p
-      .replace(/<[^>]+>/g, "") // strip HTML tags
-      .replace(/&[a-z]+;/g, " ") // strip HTML entities
-      .replace(/\s+/g, " ") // collapse whitespace
+    const text = htmlparser2
+      .parseDocument(p)
+      .children.map((node) => htmlparser2.DomUtils.textContent(node))
+      .join("")
+      .replace(/\s+/g, " ")
       .trim();
 
     // Skip very short or code-heavy paragraphs
