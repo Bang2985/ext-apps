@@ -11,6 +11,7 @@
  */
 
 import { randomUUID } from "crypto";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -27,6 +28,21 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 // Use the legacy build to avoid DOMMatrix dependency in Node.js
 import { getDocument, VerbosityLevel } from "pdfjs-dist/legacy/build/pdf.mjs";
+
+// Resolve pdfjs-dist's standard-14 fonts directory at runtime.
+// pdfjs-dist is --external in the bundle, so require.resolve works from
+// both source and dist/ builds. NodeStandardFontDataFactory reads this
+// path via fs.readFile, so a plain filesystem path (trailing separator
+// required) is what's expected — not a file:// URL.
+const STANDARD_FONT_DATA_URL = (() => {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require.resolve("pdfjs-dist/package.json");
+    return path.join(path.dirname(pkg), "standard_fonts") + path.sep;
+  } catch {
+    return undefined;
+  }
+})();
 import type {
   PrimitiveSchemaDefinition,
   ElicitResult,
@@ -796,9 +812,13 @@ async function extractFormFieldInfo(
   const { totalBytes } = await readRange(url, 0, 1);
   const { data } = await readRange(url, 0, totalBytes);
 
-  // verbosity: ERRORS only — we're only introspecting form fields, so
-  // font-fallback and border-style warnings are irrelevant noise.
-  const loadingTask = getDocument({ data, verbosity: VerbosityLevel.ERRORS });
+  const loadingTask = getDocument({
+    data,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    // We only introspect form fields (never render) — silence residual
+    // warnings like "Unimplemented border style: inset".
+    verbosity: VerbosityLevel.ERRORS,
+  });
   const pdfDoc = await loadingTask.promise;
 
   const fields: FormFieldInfo[] = [];
@@ -861,9 +881,13 @@ async function extractFormSchema(
   const { totalBytes } = await readRange(url, 0, 1);
   const { data } = await readRange(url, 0, totalBytes);
 
-  // verbosity: ERRORS only — we're only introspecting form fields, so
-  // font-fallback and border-style warnings are irrelevant noise.
-  const loadingTask = getDocument({ data, verbosity: VerbosityLevel.ERRORS });
+  const loadingTask = getDocument({
+    data,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    // We only introspect form fields (never render) — silence residual
+    // warnings like "Unimplemented border style: inset".
+    verbosity: VerbosityLevel.ERRORS,
+  });
   const pdfDoc = await loadingTask.promise;
 
   let fieldObjects: Record<string, PdfJsFieldObject[]> | null;
