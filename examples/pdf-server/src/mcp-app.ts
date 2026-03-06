@@ -87,6 +87,16 @@ let pdfBaselineAnnotations: PdfAnnotationDef[] = [];
 let isDirty = false;
 /** Whether we're currently restoring annotations (suppress dirty flag). */
 let isRestoring = false;
+/** Once the save button is shown, it stays visible (possibly disabled) until reload. */
+let saveBtnEverShown = false;
+/** True between save_pdf call and resolution; suppresses file_changed handling. */
+let saveInProgress = false;
+/** mtime returned by our most recent successful save_pdf. Compare against
+ *  incoming file_changed.mtimeMs to suppress our own write's echo. */
+let lastSavedMtime: number | null = null;
+/** Incremented on every reload. Fetches/preloads from an older generation are
+ *  discarded — prevents stale rangeCache entries and stale page renders. */
+let loadGeneration = 0;
 
 // Selection & interaction state
 const selectedAnnotationIds = new Set<string>();
@@ -158,6 +168,12 @@ const saveBtn = document.getElementById("save-btn") as HTMLButtonElement;
 const downloadBtn = document.getElementById(
   "download-btn",
 ) as HTMLButtonElement;
+const confirmDialogEl = document.getElementById(
+  "confirm-dialog",
+) as HTMLDivElement;
+const confirmTitleEl = document.getElementById("confirm-title")!;
+const confirmBodyEl = document.getElementById("confirm-body")!;
+const confirmButtonsEl = document.getElementById("confirm-buttons")!;
 
 // Annotation Panel DOM Elements
 const annotationsPanelEl = document.getElementById("annotation-panel")!;
@@ -561,10 +577,94 @@ function showViewer() {
   viewerEl.style.display = "flex";
 }
 
+// ---------------------------------------------------------------------------
+// Confirm dialog
+// ---------------------------------------------------------------------------
+
+interface ConfirmButton {
+  label: string;
+  primary?: boolean;
+}
+
+let activeConfirmResolve: ((i: number) => void) | null = null;
+
+/**
+ * In-app confirmation overlay. Resolves to the clicked button index, or
+ * `buttons.length - 1` on Escape (convention: put Cancel last), or `-1` if
+ * pre-empted by another dialog. Callers should treat anything but the
+ * expected button index as "cancel".
+ */
+function showConfirmDialog(
+  title: string,
+  body: string,
+  buttons: ConfirmButton[],
+): Promise<number> {
+  // Pre-empt any open dialog: resolve it as cancelled
+  if (activeConfirmResolve) {
+    activeConfirmResolve(-1);
+    activeConfirmResolve = null;
+  }
+
+  confirmTitleEl.textContent = title;
+  confirmBodyEl.textContent = body;
+  confirmButtonsEl.innerHTML = "";
+  confirmDialogEl.style.display = "flex";
+
+  return new Promise<number>((resolve) => {
+    activeConfirmResolve = resolve;
+
+    const done = (i: number): void => {
+      if (activeConfirmResolve !== resolve) return; // already pre-empted
+      activeConfirmResolve = null;
+      confirmDialogEl.style.display = "none";
+      document.removeEventListener("keydown", onKey, true);
+      resolve(i);
+    };
+
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        done(buttons.length - 1);
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+
+    buttons.forEach((btn, i) => {
+      const el = document.createElement("button");
+      el.textContent = btn.label;
+      el.className = btn.primary
+        ? "confirm-btn confirm-btn-primary"
+        : "confirm-btn";
+      el.addEventListener("click", () => done(i));
+      confirmButtonsEl.appendChild(el);
+      if (btn.primary) setTimeout(() => el.focus(), 0);
+    });
+  });
+}
+
 function setDirty(dirty: boolean): void {
   if (isDirty === dirty) return;
   isDirty = dirty;
   updateTitleDisplay();
+  updateSaveBtn();
+}
+
+function updateSaveBtn(): void {
+  if (!isLocalFileUrl()) {
+    saveBtn.style.display = "none";
+    return;
+  }
+  if (isDirty) {
+    saveBtn.style.display = "";
+    saveBtn.disabled = false;
+    saveBtnEverShown = true;
+  } else if (saveBtnEverShown) {
+    saveBtn.style.display = "";
+    saveBtn.disabled = true;
+  } else {
+    saveBtn.style.display = "none";
+  }
 }
 
 function updateTitleDisplay(): void {
@@ -3089,7 +3189,7 @@ function restoreAnnotations(): void {
       diff.removed.length > 0 ||
       Object.keys(diff.formFields).length > 0
     ) {
-      isDirty = true;
+      setDirty(true);
     }
     log.info(
       `Restored ${annotationMap.size} annotations (${diff.added.length} added, ${diff.removed.length} removed), ${formFieldValues.size} form fields`,
@@ -3234,7 +3334,16 @@ function isLocalFileUrl(): boolean {
 }
 
 async function savePdf(): Promise<void> {
-  if (!pdfDocument) return;
+  if (!pdfDocument || !isDirty || saveInProgress) return;
+
+  const choice = await showConfirmDialog(
+    "Save PDF",
+    `Overwrite ${pdfUrl} with your annotations and form edits?`,
+    [{ label: "Save", primary: true }, { label: "Cancel" }],
+  );
+  if (choice !== 0) return;
+
+  saveInProgress = true;
   saveBtn.disabled = true;
   saveBtn.title = "Saving...";
 
@@ -3248,11 +3357,15 @@ async function savePdf(): Promise<void> {
     });
 
     if (result.isError) {
-      log.error("Save error:", result.content);
+      log.error("Save failed:", result.content);
+      saveBtn.disabled = false; // let user retry
     } else {
-      log.info("PDF saved successfully");
-      // Clear dirty flag and localStorage diff since annotations are now in the file
-      setDirty(false);
+      log.info("PDF saved");
+      // Record mtime so we recognize our own write in file_changed
+      const sc = result.structuredContent as { mtimeMs?: number } | undefined;
+      lastSavedMtime = sc?.mtimeMs ?? null;
+
+      setDirty(false); // → updateSaveBtn() disables button
       const key = annotationStorageKey();
       if (key) {
         try {
@@ -3263,9 +3376,10 @@ async function savePdf(): Promise<void> {
       }
     }
   } catch (err) {
-    log.error("Save error:", err);
-  } finally {
+    log.error("Save failed:", err);
     saveBtn.disabled = false;
+  } finally {
+    saveInProgress = false;
     saveBtn.title = "Save to file (overwrites original)";
   }
 }
@@ -4066,6 +4180,7 @@ async function fetchChunk(
   begin: number,
   end: number,
 ): Promise<RangeResult> {
+  const gen = loadGeneration; // capture before any await
   const cacheKey = `${url}:${begin}-${end}`;
   const cached = rangeCache.get(cacheKey);
   if (cached) return cached;
@@ -4097,6 +4212,12 @@ async function fetchChunk(
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      // PDF was reloaded while this fetch was in flight — don't poison the
+      // cache with bytes from the old generation's offsets.
+      if (gen !== loadGeneration) {
+        throw new Error("Fetch cancelled — PDF was reloaded");
       }
 
       const entry: RangeResult = { bytes, totalBytes: chunk.totalBytes };
@@ -4155,6 +4276,92 @@ async function fetchRange(
   const entry = { bytes: combined, totalBytes: results[0].totalBytes };
   rangeCache.set(`${url}:${begin}-${end}`, entry);
   return entry;
+}
+
+/**
+ * Reload the current PDF from disk, discarding all in-memory edits and caches.
+ * Preserves currentPage (clamped). Does not stop/restart the poll loop.
+ */
+async function reloadPdf(): Promise<void> {
+  log.info("Reloading PDF from disk");
+  showLoading("Reloading...");
+
+  // Invalidate all in-flight fetches and the preloader
+  loadGeneration++;
+
+  // Drop byte cache — file contents changed, everything is stale.
+  // In-flight requests will check loadGeneration before re-populating.
+  rangeCache.clear();
+  inflightRequests.clear();
+
+  // Cancel active render and destroy the old document
+  currentRenderTask?.cancel();
+  currentRenderTask = null;
+  const oldDoc = pdfDocument;
+  pdfDocument = null;
+  await oldDoc?.destroy().catch(() => {});
+
+  // Clear per-document edit/display state
+  for (const [, t] of annotationMap) for (const el of t.elements) el.remove();
+  annotationMap.clear();
+  formFieldValues.clear();
+  imageCache.clear();
+  selectedAnnotationIds.clear();
+  undoStack.length = 0;
+  redoStack.length = 0;
+  pdfBaselineAnnotations = [];
+  pageTextCache.clear();
+  pageTextItemsCache.clear();
+  allMatches = [];
+  currentMatchIndex = -1;
+  focusedFieldName = null;
+  fieldNameToIds.clear();
+  fieldNameToLabel.clear();
+  fieldNameToOrder.clear();
+  cachedFieldObjects = null;
+
+  // Drop persisted localStorage diff — disk is now the source of truth
+  const key = annotationStorageKey();
+  if (key) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // Reset save-button state machine
+  saveBtnEverShown = false;
+  lastSavedMtime = null;
+  isDirty = false;
+  updateTitleDisplay();
+  updateSaveBtn();
+
+  // Reset preload indicators
+  pagesLoaded = 0;
+  preloadErrors = [];
+  loadingIndicatorEl.classList.remove("error");
+  loadingIndicatorEl.style.display = "none";
+
+  try {
+    const { document, totalBytes } = await loadPdfProgressively(pdfUrl);
+    pdfDocument = document;
+    totalPages = document.numPages;
+    currentPage = Math.max(1, Math.min(currentPage, totalPages));
+    log.info("PDF reloaded:", totalPages, "pages,", totalBytes, "bytes");
+
+    showViewer();
+    await loadBaselineAnnotations(document);
+    await buildFieldNameMap(document);
+    syncFormValuesToStorage();
+    updateAnnotationsBadge();
+    renderAnnotationPanel();
+    renderPage();
+    startPreloading();
+  } catch (err) {
+    log.error("Reload failed:", err);
+    showError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 /**
@@ -4254,8 +4461,13 @@ function scheduleSearchRefresh() {
 
 async function startPreloading() {
   if (!pdfDocument) return;
+  const gen = loadGeneration;
   log.info("Starting background preload of", totalPages, "pages");
   for (let i = 1; i <= totalPages; i++) {
+    if (gen !== loadGeneration) {
+      log.info("Preload aborted — PDF reloaded");
+      return;
+    }
     if (pageTextCache.has(i)) {
       pagesLoaded++;
       updateLoadingIndicator();
@@ -4337,8 +4549,9 @@ app.ontoolresult = async (result: CallToolResult) => {
       ? ""
       : "none";
     // downloadBtn.style.display = "";
-    // Show save button only for local files
-    saveBtn.style.display = isLocalFileUrl() ? "" : "none";
+    // Save button visibility driven by setDirty()/updateSaveBtn();
+    // restoreAnnotations() above may have already shown it via setDirty(true).
+    updateSaveBtn();
 
     // Import annotations from the PDF to establish baseline
     await loadBaselineAnnotations(document);
@@ -4408,7 +4621,8 @@ type PdfCommand =
       intervals: Array<{ start?: number; end?: number }>;
       getText: boolean;
       getScreenshots: boolean;
-    };
+    }
+  | { type: "file_changed"; mtimeMs: number };
 
 /** Get page height in PDF points (for coordinate conversion). */
 async function getPageHeight(pageNum: number): Promise<number> {
@@ -4553,6 +4767,41 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         // Handle async — don't block other commands
         handleGetPages(cmd);
         break;
+      case "file_changed": {
+        // Skip our own save_pdf echo: either save is still in flight, or the
+        // event's mtime matches what save_pdf just returned.
+        if (saveInProgress) {
+          log.info("file_changed: save in progress, ignoring");
+          break;
+        }
+        if (
+          lastSavedMtime !== null &&
+          Math.abs(cmd.mtimeMs - lastSavedMtime) < 1
+        ) {
+          log.info("file_changed: matches our last save, ignoring");
+          lastSavedMtime = null; // one-shot
+          break;
+        }
+
+        if (!isDirty) {
+          await reloadPdf();
+        } else {
+          const choice = await showConfirmDialog(
+            "File changed on disk",
+            "The PDF was modified outside this viewer, but you have unsaved " +
+              "edits. Keeping your edits may cause rendering errors when " +
+              "scrolling to pages that haven't loaded yet.",
+            [
+              { label: "Keep my edits", primary: true },
+              { label: "Discard & reload" },
+            ],
+          );
+          if (choice === 1) {
+            await reloadPdf();
+          }
+        }
+        break;
+      }
     }
   }
 

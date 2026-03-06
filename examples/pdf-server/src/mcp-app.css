@@ -634,6 +634,72 @@ body {
   cursor: not-allowed;
 }
 
+/* Confirmation Dialog */
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: light-dark(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6));
+}
+
+.confirm-box {
+  background: var(--bg000);
+  border: 1px solid var(--bg200);
+  border-radius: 8px;
+  padding: 1.25rem;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+.confirm-title {
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+  color: var(--text000);
+}
+
+.confirm-body {
+  color: var(--text100);
+  margin-bottom: 1.25rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.confirm-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--bg200);
+  border-radius: 4px;
+  background: var(--bg000);
+  color: var(--text000);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.confirm-btn:hover {
+  background: var(--bg100);
+}
+
+.confirm-btn-primary {
+  background: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  color: #fff;
+}
+
+.confirm-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
 /* Form Layer (PDF.js AnnotationLayer for interactive form widgets) */
 #form-layer {
   position: absolute;

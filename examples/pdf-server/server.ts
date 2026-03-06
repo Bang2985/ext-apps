@@ -302,7 +302,8 @@ export type PdfCommand =
       intervals: Array<{ start?: number; end?: number }>;
       getText: boolean;
       getScreenshots: boolean;
-    };
+    }
+  | { type: "file_changed"; mtimeMs: number };
 
 // =============================================================================
 // Pending get_pages Requests (request-response bridge via client)
@@ -352,6 +353,19 @@ const viewFieldNames = new Map<string, Set<string>>();
 /** Detailed form field info per viewer UUID (populated during display_pdf) */
 const viewFieldInfo = new Map<string, FormFieldInfo[]>();
 
+/**
+ * Active fs.watch per view. Only created for local files when interact is
+ * enabled (stdio). Watcher is re-established on `rename` events to survive
+ * atomic writes (vim/vscode write-to-tmp-then-rename changes the inode).
+ */
+interface ViewFileWatch {
+  filePath: string;
+  watcher: fs.FSWatcher;
+  lastMtimeMs: number;
+  debounce: ReturnType<typeof setTimeout> | null;
+}
+const viewFileWatches = new Map<string, ViewFileWatch>();
+
 function pruneStaleQueues(): void {
   const now = Date.now();
   for (const [uuid, entry] of commandQueues) {
@@ -359,6 +373,7 @@ function pruneStaleQueues(): void {
       commandQueues.delete(uuid);
       viewFieldNames.delete(uuid);
       viewFieldInfo.delete(uuid);
+      stopFileWatch(uuid);
     }
   }
   // Clean up empty queues with no active pollers
@@ -395,6 +410,81 @@ function dequeueCommands(viewUUID: string): PdfCommand[] {
   const commands = entry.commands;
   commandQueues.delete(viewUUID);
   return commands;
+}
+
+// =============================================================================
+// File Watching (local files, stdio only)
+// =============================================================================
+
+const FILE_WATCH_DEBOUNCE_MS = 150;
+
+export function startFileWatch(viewUUID: string, filePath: string): void {
+  const resolved = path.resolve(filePath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    return; // vanished between validation and here
+  }
+
+  // Replace any existing watcher for this view
+  stopFileWatch(viewUUID);
+
+  const entry: ViewFileWatch = {
+    filePath: resolved,
+    watcher: null as unknown as fs.FSWatcher,
+    lastMtimeMs: stat.mtimeMs,
+    debounce: null,
+  };
+
+  const onEvent = (eventType: string): void => {
+    if (entry.debounce) clearTimeout(entry.debounce);
+    entry.debounce = setTimeout(() => {
+      entry.debounce = null;
+      let s: fs.Stats;
+      try {
+        s = fs.statSync(resolved);
+      } catch {
+        return; // gone mid-atomic-write; next rename will re-attach
+      }
+      if (s.mtimeMs === entry.lastMtimeMs) return; // spurious / already sent
+      entry.lastMtimeMs = s.mtimeMs;
+      enqueueCommand(viewUUID, { type: "file_changed", mtimeMs: s.mtimeMs });
+    }, FILE_WATCH_DEBOUNCE_MS);
+
+    // Atomic saves replace the inode — old watcher stops firing. Re-attach.
+    if (eventType === "rename") {
+      try {
+        entry.watcher.close();
+      } catch {
+        /* already closed */
+      }
+      try {
+        entry.watcher = fs.watch(resolved, onEvent);
+      } catch {
+        // File removed, not replaced. Leave closed; pruneStaleQueues cleans up.
+      }
+    }
+  };
+
+  try {
+    entry.watcher = fs.watch(resolved, onEvent);
+  } catch {
+    return; // fs.watch unsupported (e.g. some network filesystems)
+  }
+  viewFileWatches.set(viewUUID, entry);
+}
+
+export function stopFileWatch(viewUUID: string): void {
+  const entry = viewFileWatches.get(viewUUID);
+  if (!entry) return;
+  if (entry.debounce) clearTimeout(entry.debounce);
+  try {
+    entry.watcher.close();
+  } catch {
+    /* ignore */
+  }
+  viewFileWatches.delete(viewUUID);
 }
 
 // =============================================================================
@@ -1258,6 +1348,18 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       // Probe file size so the client can set up range transport without an extra fetch
       const { totalBytes } = await readPdfRange(normalized, 0, 1);
       const uuid = randomUUID();
+
+      // Watch for external changes (stdio only — needs the poll channel)
+      if (
+        !disableInteract &&
+        (isFileUrl(normalized) || isLocalPath(normalized))
+      ) {
+        const watchPath = isFileUrl(normalized)
+          ? fileUrlToPath(normalized)
+          : decodeURIComponent(normalized);
+        startFileWatch(uuid, watchPath);
+      }
+
       // Extract form field schema (used for elicitation and field name validation)
       let formSchema: Awaited<ReturnType<typeof extractFormSchema>> = null;
       try {
@@ -2188,6 +2290,10 @@ Example — add a signature image and a stamp, then screenshot to verify:
         url: z.string().describe("Original PDF URL or local file path"),
         data: z.string().describe("Base64-encoded PDF bytes"),
       },
+      outputSchema: z.object({
+        filePath: z.string(),
+        mtimeMs: z.number(),
+      }),
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ url, data }): Promise<CallToolResult> => {
@@ -2213,9 +2319,15 @@ Example — add a signature image and a stamp, then screenshot to verify:
       }
       try {
         const bytes = Buffer.from(data, "base64");
-        await fs.promises.writeFile(path.resolve(filePath), bytes);
+        const resolved = path.resolve(filePath);
+        await fs.promises.writeFile(resolved, bytes);
+        const { mtimeMs } = await fs.promises.stat(resolved);
+        // Don't suppress file_changed here — the saving viewer will recognise
+        // its own mtime, while other viewers on the same file correctly get
+        // notified that their content is stale.
         return {
           content: [{ type: "text", text: `Saved to ${filePath}` }],
+          structuredContent: { filePath: resolved, mtimeMs },
         };
       } catch (err) {
         return {
