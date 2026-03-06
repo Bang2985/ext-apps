@@ -97,9 +97,9 @@ body {
 }
 
 .tsd-navigation a.current {
-	background-color: rgba(107, 114, 128, 0.12);
+	background-color: rgba(107, 114, 128, 0.15);
 	color: var(--color-text);
-	font-weight: 600;
+	font-weight: 700;
 }
 
 /* Group headers (Documents, Security, API Documentation) */
@@ -124,9 +124,9 @@ body {
 	}
 
 	.tsd-navigation a.current {
-		background-color: rgba(229, 231, 235, 0.12);
+		background-color: rgba(229, 231, 235, 0.15);
 		color: var(--color-text);
-		font-weight: 600;
+		font-weight: 700;
 	}
 }
 
@@ -140,9 +140,9 @@ body {
 }
 
 :root[data-theme='dark'] .tsd-navigation a.current {
-	background-color: rgba(229, 231, 235, 0.12);
+	background-color: rgba(229, 231, 235, 0.15);
 	color: var(--color-text);
-	font-weight: 600;
+	font-weight: 700;
 }
 
 /* ------------------------------------------------------------------ */
