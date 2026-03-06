@@ -26,7 +26,7 @@ import {
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 // Use the legacy build to avoid DOMMatrix dependency in Node.js
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { getDocument, VerbosityLevel } from "pdfjs-dist/legacy/build/pdf.mjs";
 import type {
   PrimitiveSchemaDefinition,
   ElicitResult,
@@ -796,7 +796,9 @@ async function extractFormFieldInfo(
   const { totalBytes } = await readRange(url, 0, 1);
   const { data } = await readRange(url, 0, totalBytes);
 
-  const loadingTask = getDocument({ data });
+  // verbosity: ERRORS only — we're only introspecting form fields, so
+  // font-fallback and border-style warnings are irrelevant noise.
+  const loadingTask = getDocument({ data, verbosity: VerbosityLevel.ERRORS });
   const pdfDoc = await loadingTask.promise;
 
   const fields: FormFieldInfo[] = [];
@@ -859,7 +861,9 @@ async function extractFormSchema(
   const { totalBytes } = await readRange(url, 0, 1);
   const { data } = await readRange(url, 0, totalBytes);
 
-  const loadingTask = getDocument({ data });
+  // verbosity: ERRORS only — we're only introspecting form fields, so
+  // font-fallback and border-style warnings are irrelevant noise.
+  const loadingTask = getDocument({ data, verbosity: VerbosityLevel.ERRORS });
   const pdfDoc = await loadingTask.promise;
 
   let fieldObjects: Record<string, PdfJsFieldObject[]> | null;
@@ -1356,6 +1360,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
         },
         _meta: {
           viewUUID: uuid,
+          interactEnabled: !disableInteract,
         },
       };
     },

@@ -60,6 +60,7 @@ let scale = 1.0;
 let pdfUrl = "";
 let pdfTitle: string | undefined;
 let viewUUID: string | undefined;
+let interactEnabled = false;
 let currentRenderTask: { cancel: () => void } | null = null;
 
 // Annotation types imported from ./pdf-annotations.ts
@@ -4290,6 +4291,7 @@ app.ontoolresult = async (result: CallToolResult) => {
   // Note: pageCount may not be accurate until document loads
   totalPages = parsed.pageCount || 1;
   viewUUID = result._meta?.viewUUID ? String(result._meta.viewUUID) : undefined;
+  interactEnabled = result._meta?.interactEnabled === true;
 
   // Restore saved page or use initial page
   const savedPage = loadSavedPage();
@@ -4345,8 +4347,10 @@ app.ontoolresult = async (result: CallToolResult) => {
     startPreloading();
 
     // Start polling for commands now that we have viewUUID
-    if (viewUUID) {
+    if (viewUUID && interactEnabled) {
       startPolling();
+    } else {
+      log.info("Interact disabled on server — skipping poll_pdf_commands loop");
     }
   } catch (err) {
     log.error("Error loading PDF:", err);
@@ -4562,6 +4566,13 @@ async function pollLoop(): Promise<void> {
         name: "poll_pdf_commands",
         arguments: { viewUUID },
       });
+      if (result.isError) {
+        // Tool not found or server rejected — stop polling entirely rather
+        // than spin on a non-recoverable error result (which doesn't throw).
+        log.error("poll_pdf_commands error — stopping poll loop:", result);
+        polling = false;
+        return;
+      }
       const commands =
         (result.structuredContent as { commands?: PdfCommand[] })?.commands ||
         [];
