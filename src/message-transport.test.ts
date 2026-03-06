@@ -94,10 +94,11 @@ describe("PostMessageTransport", () => {
   }
 
   // ==========================================================================
-  // Source validation — the primary security boundary.
-  // The transport validates `event.source` (which window sent the message),
-  // NOT `event.origin`. See send() which posts with `"*"` — origin is
-  // intentionally not part of this transport's trust model.
+  // Source validation — the security boundary at this layer.
+  // The transport validates `event.source` (window identity), not `event.origin`.
+  // Origin checks live in the sandbox proxy relay between the two endpoints
+  // (see examples/basic-host/src/sandbox.ts). Here, source===contentWindow is
+  // the narrower check; the app side can't know its sandbox's origin anyway.
   // ==========================================================================
   describe("source validation", () => {
     it("delivers messages from the configured eventSource", async () => {
