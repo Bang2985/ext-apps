@@ -189,6 +189,18 @@ export function load(app) {
       "</head>",
       headInjections + "\n</head>",
     );
+
+    // Inject script to mark the current sidebar nav link with a "current" class.
+    // TypeDoc does not natively add this class for document pages.
+    // The sidebar is populated asynchronously from compressed navigation data,
+    // so we use a MutationObserver to detect when links appear.
+    // Pathname comparison strips trailing slashes and .html extensions to handle
+    // servers with clean-URL mode (e.g. `serve` drops .html).
+    const currentNavScript = `<script>(function(){function norm(s){return s.replace(/\\/$/,"").replace(/\\.html$/,"");}function mark(){var p=norm(location.pathname);var links=document.querySelectorAll(".site-menu .tsd-navigation a[href]");for(var i=0;i<links.length;i++){var h=norm(new URL(links[i].href,location.href).pathname);if(h===p){links[i].classList.add("current");return true;}}return false;}function init(){if(!mark()){var c=document.getElementById("tsd-nav-container");if(c){new MutationObserver(function(m,o){if(mark())o.disconnect();}).observe(c,{childList:true,subtree:true});}}}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{init();}})();</script>`;
+    page.contents = page.contents.replace(
+      "</body>",
+      currentNavScript + "\n</body>",
+    );
   });
 
   // --- Post-render: copy favicons + rename document slugs ---

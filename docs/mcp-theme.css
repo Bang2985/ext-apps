@@ -174,7 +174,7 @@ body {
 code,
 pre {
 	font-family: var(--font-family-code);
-	font-size: 0.85em;
+	font-size: 1em;
 }
 
 .tsd-typography pre {
@@ -185,5 +185,5 @@ pre {
 /* Inline code */
 .tsd-typography code:not(pre code) {
 	padding: 0.15em 0.35em;
-	font-size: 0.875em;
+	font-size: 1em;
 }
