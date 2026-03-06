@@ -11,7 +11,6 @@
  */
 
 import { randomUUID } from "crypto";
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -27,22 +26,37 @@ import {
   type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 // Use the legacy build to avoid DOMMatrix dependency in Node.js
-import { getDocument, VerbosityLevel } from "pdfjs-dist/legacy/build/pdf.mjs";
+import {
+  getDocument,
+  VerbosityLevel,
+  version as PDFJS_VERSION,
+} from "pdfjs-dist/legacy/build/pdf.mjs";
 
-// Resolve pdfjs-dist's standard-14 fonts directory at runtime.
-// pdfjs-dist is --external in the bundle, so require.resolve works from
-// both source and dist/ builds. NodeStandardFontDataFactory reads this
-// path via fs.readFile, so a plain filesystem path (trailing separator
-// required) is what's expected — not a file:// URL.
-const STANDARD_FONT_DATA_URL = (() => {
-  try {
-    const require = createRequire(import.meta.url);
-    const pkg = require.resolve("pdfjs-dist/package.json");
-    return path.join(path.dirname(pkg), "standard_fonts") + path.sep;
-  } catch {
-    return undefined;
+/**
+ * PDF Standard-14 fonts from CDN. Used by both server and viewer so we
+ * declare a single well-known origin in CSP connectDomains.
+ *
+ * pdf.js in Node defaults to NodeStandardFontDataFactory (fs.readFile) which
+ * can't fetch URLs, so we pass {@link FetchStandardFontDataFactory} alongside.
+ * The browser viewer uses the DOM factory by default and just needs the URL.
+ */
+export const STANDARD_FONT_DATA_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/standard_fonts/`;
+const STANDARD_FONT_ORIGIN = "https://unpkg.com";
+
+/** pdf.js font factory that uses fetch() instead of fs.readFile. */
+class FetchStandardFontDataFactory {
+  baseUrl: string | null;
+  constructor({ baseUrl = null }: { baseUrl?: string | null }) {
+    this.baseUrl = baseUrl;
   }
-})();
+  async fetch({ filename }: { filename: string }): Promise<Uint8Array> {
+    if (!this.baseUrl) throw new Error("standardFontDataUrl not provided");
+    const url = `${this.baseUrl}${filename}`;
+    const res = await globalThis.fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+}
 import type {
   PrimitiveSchemaDefinition,
   ElicitResult,
@@ -815,6 +829,7 @@ async function extractFormFieldInfo(
   const loadingTask = getDocument({
     data,
     standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    StandardFontDataFactory: FetchStandardFontDataFactory,
     // We only introspect form fields (never render) — silence residual
     // warnings like "Unimplemented border style: inset".
     verbosity: VerbosityLevel.ERRORS,
@@ -884,6 +899,7 @@ async function extractFormSchema(
   const loadingTask = getDocument({
     data,
     standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    StandardFontDataFactory: FetchStandardFontDataFactory,
     // We only introspect form fields (never render) — silence residual
     // warnings like "Unimplemented border style: inset".
     verbosity: VerbosityLevel.ERRORS,
@@ -2235,6 +2251,11 @@ Example — add a signature image and a stamp, then screenshot to verify:
             _meta: {
               ui: {
                 permissions: { clipboardWrite: {} },
+                csp: {
+                  // pdf.js fetches the PDF Standard-14 fonts via fetch(),
+                  // mapped to CSP connect-src.
+                  connectDomains: [STANDARD_FONT_ORIGIN],
+                },
               },
             },
           },

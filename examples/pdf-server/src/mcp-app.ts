@@ -47,6 +47,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).href;
 
+// PDF Standard-14 fonts from CDN (requires unpkg.com in CSP connectDomains).
+// Pinned to the bundled pdfjs-dist version so font glyph indices match.
+const STANDARD_FONT_DATA_URL = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`;
+
 const log = {
   info: console.log.bind(console, "[PDF-VIEWER]"),
   error: console.error.bind(console, "[PDF-VIEWER]"),
@@ -4182,7 +4186,10 @@ async function loadPdfProgressively(
   // Create transport with total file size, no initial data — PDF.js will request what it needs
   const transport = new AppRangeTransport(fileTotalBytes, null);
 
-  const loadingTask = pdfjsLib.getDocument({ range: transport });
+  const loadingTask = pdfjsLib.getDocument({
+    range: transport,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
+  });
 
   try {
     const document = await loadingTask.promise;
