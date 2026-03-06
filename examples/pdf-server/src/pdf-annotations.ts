@@ -282,6 +282,7 @@ export function computeDiff(
   pdfAnnotations: PdfAnnotationDef[],
   currentAnnotations: PdfAnnotationDef[],
   formFields: Map<string, string | boolean>,
+  baselineFormFields?: Map<string, string | boolean>,
 ): AnnotationDiff {
   const pdfIds = new Set(pdfAnnotations.map((a) => a.id));
   const currentIds = new Set(currentAnnotations.map((a) => a.id));
@@ -294,10 +295,20 @@ export function computeDiff(
     .filter((a) => !currentIds.has(a.id))
     .map((a) => a.id);
 
-  // Form fields
+  // Form fields: only values that differ from what's already in the PDF.
+  // Without a baseline, every filled field is a user edit (back-compat).
   const formFieldsObj: Record<string, string | boolean> = {};
   for (const [k, v] of formFields) {
+    if (baselineFormFields?.get(k) === v) continue;
     formFieldsObj[k] = v;
+  }
+  // Fields present in baseline but cleared in current are also a change
+  if (baselineFormFields) {
+    for (const [k, v] of baselineFormFields) {
+      if (!formFields.has(k) && v !== "" && v !== false) {
+        formFieldsObj[k] = formFields.get(k) ?? "";
+      }
+    }
   }
 
   return { added, removed, formFields: formFieldsObj };

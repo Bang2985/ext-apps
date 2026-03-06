@@ -278,6 +278,37 @@ describe("computeDiff", () => {
     expect(diff.formFields).toEqual({ name: "Alice", agree: true });
   });
 
+  it("omits form fields matching baseline", () => {
+    const baseline = new Map<string, string | boolean>([
+      ["name", "Alice"],
+      ["agree", true],
+    ]);
+    const fields = new Map<string, string | boolean>([
+      ["name", "Alice"], // unchanged
+      ["agree", false], // changed
+      ["email", "a@b"], // new
+    ]);
+    const diff = computeDiff([], [], fields, baseline);
+    expect(diff.formFields).toEqual({ agree: false, email: "a@b" });
+  });
+
+  it("records fields cleared from baseline", () => {
+    const baseline = new Map<string, string | boolean>([["name", "Alice"]]);
+    const fields = new Map<string, string | boolean>(); // cleared
+    const diff = computeDiff([], [], fields, baseline);
+    expect(diff.formFields).toEqual({ name: "" });
+  });
+
+  it("produces empty diff when all form values match baseline", () => {
+    const baseline = new Map<string, string | boolean>([
+      ["name", "Alice"],
+      ["agree", true],
+    ]);
+    const diff = computeDiff([], [], new Map(baseline), baseline);
+    expect(diff.formFields).toEqual({});
+    expect(isDiffEmpty(diff)).toBe(true);
+  });
+
   it("round-trips through mergeAnnotations", () => {
     const userStamp: PdfAnnotationDef = {
       type: "stamp",

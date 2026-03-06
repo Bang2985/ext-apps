@@ -83,6 +83,8 @@ const imageCache = new Map<string, HTMLImageElement>();
 
 /** Annotations imported from the PDF file (baseline for diff computation). */
 let pdfBaselineAnnotations: PdfAnnotationDef[] = [];
+/** Form field values stored in the PDF file itself (baseline for diff computation). */
+const pdfBaselineFormValues = new Map<string, string | boolean>();
 
 // Dirty flag — tracks unsaved local changes
 let isDirty = false;
@@ -3161,6 +3163,7 @@ function persistAnnotations(): void {
     pdfBaselineAnnotations,
     currentAnnotations,
     formFieldValues,
+    pdfBaselineFormValues,
   );
 
   // Dirty tracks whether there are unsaved changes. Undoing back to baseline
@@ -3222,6 +3225,25 @@ function restoreAnnotations(): void {
 // PDF.js Form Field Name → ID Mapping
 // =============================================================================
 
+/**
+ * Extract a meaningful value from a getFieldObjects() field array.
+ * Returns null for empty/unfilled/button fields so they don't clutter
+ * the panel or count as baseline edits.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function importFieldValue(fieldArr: any[]): string | boolean | null {
+  // For radio groups, getFieldObjects returns a parent entry with
+  // value=undefined plus child entries — find the first with a real value.
+  const f = fieldArr.find((x) => x.value != null) ?? fieldArr[0];
+  if (!f || f.type === "button") return null;
+  const v = f.value;
+  if (v == null || v === "" || v === "Off") return null;
+  if (f.type === "checkbox") return true;
+  if (f.type === "radiobutton") return String(v);
+  if (Array.isArray(v)) return v.join(", ");
+  return String(v);
+}
+
 /** Build mapping from field names (used by fill_form) to annotation IDs (used by annotationStorage). */
 async function buildFieldNameMap(
   doc: pdfjsLib.PDFDocumentProxy,
@@ -3231,6 +3253,7 @@ async function buildFieldNameMap(
   fieldNameToLabel.clear();
   fieldNameToOrder.clear();
   cachedFieldObjects = null;
+  pdfBaselineFormValues.clear();
   try {
     const fieldObjects = await doc.getFieldObjects();
     cachedFieldObjects = fieldObjects as Record<string, any[]> | null;
@@ -3246,6 +3269,16 @@ async function buildFieldNameMap(
         // Store page number (0-based in PDF.js field objects → 1-based for us)
         if (firstField && typeof firstField.page === "number") {
           fieldNameToPage.set(name, firstField.page + 1);
+        }
+        // Import baseline value (already saved in the PDF). Skip button-type
+        // fields and empty/Off values that represent "unfilled".
+        const v = importFieldValue(fieldArr);
+        if (v !== null) {
+          pdfBaselineFormValues.set(name, v);
+          // Seed current state from baseline so the panel shows it. A
+          // restored localStorage diff (applied later in restoreAnnotations)
+          // will overwrite specific fields the user changed.
+          if (!formFieldValues.has(name)) formFieldValues.set(name, v);
         }
       }
     }
@@ -4333,6 +4366,7 @@ async function reloadPdf(): Promise<void> {
   undoStack.length = 0;
   redoStack.length = 0;
   pdfBaselineAnnotations = [];
+  pdfBaselineFormValues.clear();
   pageTextCache.clear();
   pageTextItemsCache.clear();
   allMatches = [];
