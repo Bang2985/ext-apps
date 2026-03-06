@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   createPdfCache,
   createServer,
@@ -8,6 +12,8 @@ import {
   allowedLocalFiles,
   allowedLocalDirs,
   pathToFileUrl,
+  startFileWatch,
+  stopFileWatch,
   CACHE_INACTIVITY_TIMEOUT_MS,
   CACHE_MAX_LIFETIME_MS,
   CACHE_MAX_PDF_SIZE_BYTES,
@@ -444,5 +450,161 @@ describe("createServer useClientRoots option", () => {
     // the roots refresh handler.
     expect(server.server.oninitialized).toBeFunction();
     server.close();
+  });
+});
+
+describe("file watching", () => {
+  let tmpDir: string;
+  let tmpFile: string;
+  const uuid = "test-watch-uuid";
+
+  // Long-poll timeout is 30s — tests that poll must complete sooner.
+  const pollWithTimeout = async (
+    client: Client,
+    timeoutMs = 5000,
+  ): Promise<{ type: string; mtimeMs?: number }[]> => {
+    const result = await Promise.race([
+      client.callTool({
+        name: "poll_pdf_commands",
+        arguments: { viewUUID: uuid },
+      }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("poll timeout")), timeoutMs),
+      ),
+    ]);
+    return (
+      ((result as { structuredContent?: { commands?: unknown[] } })
+        .structuredContent?.commands as { type: string; mtimeMs?: number }[]) ??
+      []
+    );
+  };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-watch-"));
+    tmpFile = path.join(tmpDir, "test.pdf");
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%test\n"));
+    allowedLocalFiles.add(tmpFile);
+  });
+
+  afterEach(() => {
+    stopFileWatch(uuid);
+    allowedLocalFiles.delete(tmpFile);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("enqueues file_changed after external write", async () => {
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    startFileWatch(uuid, tmpFile);
+    await new Promise((r) => setTimeout(r, 50)); // let watcher settle
+
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%changed\n"));
+
+    const cmds = await pollWithTimeout(client);
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0].type).toBe("file_changed");
+    expect(cmds[0].mtimeMs).toBeGreaterThan(0);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("debounces rapid writes into one command", async () => {
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    startFileWatch(uuid, tmpFile);
+    await new Promise((r) => setTimeout(r, 50));
+
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%a\n"));
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%b\n"));
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%c\n"));
+
+    const cmds = await pollWithTimeout(client);
+    expect(cmds).toHaveLength(1);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("stopFileWatch prevents further commands", async () => {
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    startFileWatch(uuid, tmpFile);
+    await new Promise((r) => setTimeout(r, 50));
+    stopFileWatch(uuid);
+
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%x\n"));
+
+    // Debounce window + margin — no event should fire
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Poll should block (long-poll) → timeout here means no command was queued
+    await expect(pollWithTimeout(client, 500)).rejects.toThrow("poll timeout");
+
+    await client.close();
+    await server.close();
+  });
+
+  it("save_pdf returns mtimeMs in structuredContent", async () => {
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const before = fs.statSync(tmpFile).mtimeMs;
+    // Ensure mtime will differ on coarse-granularity filesystems
+    await new Promise((r) => setTimeout(r, 10));
+
+    const r = await client.callTool({
+      name: "save_pdf",
+      arguments: {
+        url: tmpFile,
+        data: Buffer.from("%PDF-1.4\nnew").toString("base64"),
+      },
+    });
+    expect(r.isError).toBeFalsy();
+    const sc = r.structuredContent as { filePath: string; mtimeMs: number };
+    expect(sc.filePath).toBe(tmpFile);
+    expect(sc.mtimeMs).toBeGreaterThanOrEqual(before);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("survives atomic rename (re-attaches watcher)", async () => {
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    startFileWatch(uuid, tmpFile);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Simulate vim/vscode: write to temp, rename over original
+    const tmpWrite = tmpFile + ".swp";
+    fs.writeFileSync(tmpWrite, Buffer.from("%PDF-1.4\n%atomic\n"));
+    fs.renameSync(tmpWrite, tmpFile);
+
+    const cmds = await pollWithTimeout(client);
+    expect(cmds).toHaveLength(1);
+    expect(cmds[0].type).toBe("file_changed");
+
+    // Watcher should have re-attached — second write still fires
+    await new Promise((r) => setTimeout(r, 50));
+    fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%after\n"));
+    const cmds2 = await pollWithTimeout(client);
+    expect(cmds2).toHaveLength(1);
+
+    await client.close();
+    await server.close();
   });
 });
