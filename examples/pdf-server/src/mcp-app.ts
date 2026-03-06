@@ -3336,9 +3336,14 @@ function isLocalFileUrl(): boolean {
 async function savePdf(): Promise<void> {
   if (!pdfDocument || !isDirty || saveInProgress) return;
 
+  const fileName =
+    pdfUrl
+      .replace(/^file:\/\/|^computer:\/\//, "")
+      .split(/[/\\]/)
+      .pop() || pdfUrl;
   const choice = await showConfirmDialog(
     "Save PDF",
-    `Overwrite ${pdfUrl} with your annotations and form edits?`,
+    `Overwrite ${fileName} with your annotations and form edits?`,
     [{ label: "Save", primary: true }, { label: "Cancel" }],
   );
   if (choice !== 0) return;

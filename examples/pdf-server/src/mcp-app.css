@@ -697,6 +697,8 @@ body {
 }
 
 .confirm-btn-primary:hover {
+  /* .confirm-btn:hover above would otherwise reset background to --bg100 */
+  background: var(--accent, #2563eb);
   filter: brightness(1.1);
 }
 
