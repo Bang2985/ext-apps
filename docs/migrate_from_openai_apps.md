@@ -1,5 +1,6 @@
 ---
 title: Migrate OpenAI App
+description: Migrate from the OpenAI Apps SDK to MCP Apps SDK with concept mapping tables, API equivalents, and complete before/after code examples.
 ---
 
 # Migrating from OpenAI Apps SDK to MCP Apps SDK
