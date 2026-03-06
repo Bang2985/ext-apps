@@ -1607,6 +1607,7 @@ function annotationsToMarkdown(annotations: TrackedAnnotation[]): string {
   for (let i = 0; i < annotations.length; i++) {
     const d = annotations[i].def;
     const desc = (d.description || "")
+      .replace(/\\/g, "\\\\")
       .replace(/\|/g, "\\|")
       .replace(/\n/g, "<br>");
     const base = `| ${i + 1} | ${d.type} | ${d.id} | ${d.label || ""} | ${annDetails(d)} | ${d.color || (d.type === "marker" ? "red" : "blue")} |`;
