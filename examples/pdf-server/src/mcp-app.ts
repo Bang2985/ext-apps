@@ -3737,26 +3737,43 @@ async function renderPage() {
           fieldObjects: cachedFieldObjects,
         } as any);
 
-        // Fix combo reset: PDF.js resets combos by deselecting all options,
-        // but the browser then shows the first real option. Re-insert a
-        // hidden empty placeholder so the combo appears blank after reset.
+        // Fix combo reset: pdf.js's resetform handler sets all
+        // option.selected = (option.value === defaultFieldValue), and
+        // defaultFieldValue is typically null — nothing matches. On a
+        // non-multiple <select>, the browser immediately normalizes the
+        // all-deselected state by auto-selecting the first option, so the
+        // combo shows "New York" instead of blank.
+        //
+        // We can't check state AFTER pdf.js's handler (normalisation has
+        // already happened), so we capture whether the select was blank
+        // BEFORE the event. If reset maps to no option, restore blankness.
         for (const sel of formLayerEl.querySelectorAll<HTMLSelectElement>(
           "select:not([size])",
         )) {
+          // data-default: exportValue the PDF's reset maps to ("" if none)
+          const defaultExport =
+            [...sel.options].find((o) => o.defaultSelected && o.value !== " ")
+              ?.value ?? "";
           sel.addEventListener("resetform", () => {
-            // If no option ended up selected, prepend a hidden blank
-            if (sel.selectedIndex === -1 || !sel.value || sel.value === " ") {
-              const blank = document.createElement("option");
-              blank.value = " ";
-              blank.setAttribute("hidden", "true");
-              blank.setAttribute("selected", "true");
-              sel.prepend(blank);
-              const removeBlank = () => {
-                blank.remove();
-                sel.removeEventListener("input", removeBlank);
-              };
-              sel.addEventListener("input", removeBlank);
+            // pdf.js's handler has already run (registered first). If the
+            // PDF's defaultFieldValue matched a real option, that option
+            // is now selected and we're done. Otherwise, all were
+            // deselected and the browser picked option[0].
+            if (defaultExport && sel.value === defaultExport) return;
+            // Re-insert a hidden blank and select it
+            for (const o of sel.querySelectorAll('option[value=" "]')) {
+              o.remove();
             }
+            const blank = document.createElement("option");
+            blank.value = " ";
+            blank.hidden = true;
+            sel.prepend(blank);
+            sel.selectedIndex = 0;
+            const removeBlank = () => {
+              blank.remove();
+              sel.removeEventListener("input", removeBlank);
+            };
+            sel.addEventListener("input", removeBlank);
           });
         }
 

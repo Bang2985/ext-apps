@@ -1350,18 +1350,27 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       const uuid = randomUUID();
 
       // Check writability for local files (governs save button visibility).
-      // False for read-only mounts, files without write permission, or
-      // Claude Desktop's uploads directory.
+      // Writable only if: (a) the file is explicitly in allowedLocalFiles
+      // (passed as a CLI arg, so the user clearly opted in), OR the file
+      // is STRICTLY UNDER an allowed directory root (isAncestorDir already
+      // excludes rel === "", so a root itself doesn't count); AND
+      // (b) the process has OS write permission (fs.access W_OK).
       let writable = false;
       if (isFileUrl(normalized) || isLocalPath(normalized)) {
         const localPath = isFileUrl(normalized)
           ? fileUrlToPath(normalized)
           : decodeURIComponent(normalized);
-        try {
-          await fs.promises.access(path.resolve(localPath), fs.constants.W_OK);
-          writable = true;
-        } catch {
-          // Not writable — leave false
+        const resolved = path.resolve(localPath);
+        const inAllowedScope =
+          allowedLocalFiles.has(resolved) ||
+          [...allowedLocalDirs].some((dir) => isAncestorDir(dir, resolved));
+        if (inAllowedScope) {
+          try {
+            await fs.promises.access(resolved, fs.constants.W_OK);
+            writable = true;
+          } catch {
+            // Not writable — leave false
+          }
         }
         // Watch for external changes (stdio only — needs the poll channel)
         if (!disableInteract) {
