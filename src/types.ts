@@ -136,6 +136,9 @@ export {
 import {
   CallToolRequest,
   CallToolResult,
+  CreateMessageRequest,
+  CreateMessageResult,
+  CreateMessageResultWithTools,
   EmptyResult,
   ListPromptsRequest,
   ListPromptsResult,
@@ -161,6 +164,7 @@ import {
  * - MCP UI requests (initialize, open-link, message, resource-teardown, request-display-mode)
  * - MCP server requests forwarded from the app (tools/call, tools/list, resources/list,
  *   resources/templates/list, resources/read, prompts/list)
+ * - MCP client requests forwarded to the host (sampling/createMessage)
  * - Protocol requests (ping)
  */
 export type AppRequest =
@@ -177,6 +181,7 @@ export type AppRequest =
   | ListResourceTemplatesRequest
   | ReadResourceRequest
   | ListPromptsRequest
+  | CreateMessageRequest
   | PingRequest;
 
 /**
@@ -225,4 +230,6 @@ export type AppResult =
   | ListResourceTemplatesResult
   | ReadResourceResult
   | ListPromptsResult
+  | CreateMessageResult
+  | CreateMessageResultWithTools
   | EmptyResult;

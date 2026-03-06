@@ -9,6 +9,11 @@ import {
   CallToolRequestSchema,
   CallToolResult,
   CallToolResultSchema,
+  CreateMessageRequest,
+  CreateMessageResult,
+  CreateMessageResultSchema,
+  CreateMessageResultWithTools,
+  CreateMessageResultWithToolsSchema,
   EmptyResultSchema,
   Implementation,
   ListToolsRequest,
@@ -638,7 +643,15 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
    * @internal
    */
   assertCapabilityForMethod(method: AppRequest["method"]): void {
-    // TODO
+    switch (method) {
+      case "sampling/createMessage":
+        if (!this._hostCapabilities?.sampling) {
+          throw new Error(
+            `Host does not support sampling (required for ${method})`,
+          );
+        }
+        break;
+    }
   }
 
   /**
@@ -735,6 +748,83 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
     return await this.request(
       { method: "tools/call", params },
       CallToolResultSchema,
+      options,
+    );
+  }
+
+  /**
+   * Request an LLM completion from the host (standard MCP `sampling/createMessage`).
+   *
+   * Enables the app to use the host's model connection for completions. The host
+   * has full discretion over which model to select and MAY modify or reject the
+   * request (human-in-the-loop). Check {@link getHostCapabilities `getHostCapabilities`}`()?.sampling`
+   * before calling — hosts without this capability will reject the request.
+   *
+   * This method reuses the stock MCP `CreateMessageRequest` shape. When `params.tools`
+   * is provided, the result is parsed with the extended schema that permits
+   * `stopReason: "toolUse"` and array content containing `tool_use` blocks.
+   *
+   * @param params - Standard MCP `CreateMessageRequest` params (messages, maxTokens,
+   *   systemPrompt, temperature, modelPreferences, tools, toolChoice, etc.)
+   * @param options - Request options (timeout, abort signal)
+   * @returns `CreateMessageResult` (single content block) or `CreateMessageResultWithTools`
+   *   (array content, may include `tool_use` blocks) depending on whether `tools` was set
+   *
+   * @throws {Error} If the host rejects the request or does not support sampling
+   * @throws {Error} If the request times out or the connection is lost
+   *
+   * @example Simple completion
+   * ```ts source="./app.examples.ts#App_createSamplingMessage_simple"
+   * const result = await app.createSamplingMessage({
+   *   messages: [
+   *     { role: "user", content: { type: "text", text: "Summarize this in one line." } },
+   *   ],
+   *   maxTokens: 100,
+   * });
+   * console.log(result.content);
+   * ```
+   *
+   * @example Agentic loop with tools
+   * ```ts source="./app.examples.ts#App_createSamplingMessage_withTools"
+   * if (!app.getHostCapabilities()?.sampling?.tools) return;
+   *
+   * const result = await app.createSamplingMessage({
+   *   messages,
+   *   maxTokens: 1024,
+   *   tools: [
+   *     {
+   *       name: "get_weather",
+   *       description: "Get the current weather",
+   *       inputSchema: { type: "object", properties: { city: { type: "string" } } },
+   *     },
+   *   ],
+   * });
+   * if (result.stopReason === "toolUse") {
+   *   // result.content may be an array containing tool_use blocks
+   * }
+   * ```
+   *
+   * @see `CreateMessageRequest` from @modelcontextprotocol/sdk for the request type
+   * @see `CreateMessageResult` / `CreateMessageResultWithTools` from @modelcontextprotocol/sdk for result types
+   */
+  async createSamplingMessage(
+    params: CreateMessageRequest["params"] & { tools?: undefined },
+    options?: RequestOptions,
+  ): Promise<CreateMessageResult>;
+  async createSamplingMessage(
+    params: CreateMessageRequest["params"],
+    options?: RequestOptions,
+  ): Promise<CreateMessageResultWithTools>;
+  async createSamplingMessage(
+    params: CreateMessageRequest["params"],
+    options?: RequestOptions,
+  ): Promise<CreateMessageResult | CreateMessageResultWithTools> {
+    const resultSchema = params.tools
+      ? CreateMessageResultWithToolsSchema
+      : CreateMessageResultSchema;
+    return await this.request(
+      { method: "sampling/createMessage", params },
+      resultSchema,
       options,
     );
   }
