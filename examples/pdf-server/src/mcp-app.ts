@@ -173,6 +173,7 @@ const confirmDialogEl = document.getElementById(
 ) as HTMLDivElement;
 const confirmTitleEl = document.getElementById("confirm-title")!;
 const confirmBodyEl = document.getElementById("confirm-body")!;
+const confirmDetailEl = document.getElementById("confirm-detail")!;
 const confirmButtonsEl = document.getElementById("confirm-buttons")!;
 
 // Annotation Panel DOM Elements
@@ -589,15 +590,21 @@ interface ConfirmButton {
 let activeConfirmResolve: ((i: number) => void) | null = null;
 
 /**
- * In-app confirmation overlay. Resolves to the clicked button index, or
- * `buttons.length - 1` on Escape (convention: put Cancel last), or `-1` if
- * pre-empted by another dialog. Callers should treat anything but the
- * expected button index as "cancel".
+ * In-app confirmation overlay. Resolves to the clicked button index, the
+ * cancel index on Escape, or `-1` if pre-empted by another dialog. Callers
+ * should treat anything but the expected button index as "cancel".
+ *
+ * Button ordering follows the host's native convention: Cancel first,
+ * primary action last.
+ *
+ * @param detail Optional monospace string shown in a bordered box (e.g.
+ *   a filename), matching the host's native dialog style.
  */
 function showConfirmDialog(
   title: string,
   body: string,
   buttons: ConfirmButton[],
+  detail?: string,
 ): Promise<number> {
   // Pre-empt any open dialog: resolve it as cancelled
   if (activeConfirmResolve) {
@@ -605,8 +612,13 @@ function showConfirmDialog(
     activeConfirmResolve = null;
   }
 
+  // Escape → first non-primary button (native Cancel-first ordering)
+  const nonPrimary = buttons.findIndex((b) => !b.primary);
+  const escIndex = nonPrimary >= 0 ? nonPrimary : buttons.length - 1;
+
   confirmTitleEl.textContent = title;
   confirmBodyEl.textContent = body;
+  confirmDetailEl.textContent = detail ?? "";
   confirmButtonsEl.innerHTML = "";
   confirmDialogEl.style.display = "flex";
 
@@ -625,7 +637,7 @@ function showConfirmDialog(
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        done(buttons.length - 1);
+        done(escIndex);
       }
     };
     document.addEventListener("keydown", onKey, true);
@@ -3338,15 +3350,16 @@ async function savePdf(): Promise<void> {
 
   const fileName =
     pdfUrl
-      .replace(/^file:\/\/|^computer:\/\//, "")
+      .replace(/^(file|computer):\/\//, "")
       .split(/[/\\]/)
       .pop() || pdfUrl;
   const choice = await showConfirmDialog(
     "Save PDF",
-    `Overwrite ${fileName} with your annotations and form edits?`,
-    [{ label: "Save", primary: true }, { label: "Cancel" }],
+    "Overwrite this file with your annotations and form edits?",
+    [{ label: "Cancel" }, { label: "Save", primary: true }],
+    fileName,
   );
-  if (choice !== 0) return;
+  if (choice !== 1) return;
 
   saveInProgress = true;
   saveBtn.disabled = true;
@@ -4797,11 +4810,11 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
               "edits. Keeping your edits may cause rendering errors when " +
               "scrolling to pages that haven't loaded yet.",
             [
-              { label: "Keep my edits", primary: true },
               { label: "Discard & reload" },
+              { label: "Keep my edits", primary: true },
             ],
           );
-          if (choice === 1) {
+          if (choice === 0) {
             await reloadPdf();
           }
         }
