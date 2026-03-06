@@ -4,6 +4,7 @@
  * - Normalizes document page filenames to lowercase-hyphenated slugs
  * - Injects JSON-LD (TechArticle / WebPage) structured data for search crawlers
  * - Adds per-page meta description tags extracted from page content
+ * - Copies favicons to the output directory
  */
 
 import { Renderer } from "typedoc";
@@ -116,7 +117,7 @@ function buildJsonLd({ title, description, url, isDocument }) {
 export function load(app) {
   const hostedBaseUrl = app.options.getValue("hostedBaseUrl") || "";
 
-  // --- Per-page: inject JSON-LD and meta descriptions ---
+  // --- Per-page: inject JSON-LD, meta descriptions, and favicons ---
   app.renderer.on(Renderer.EVENT_END_PAGE, (page) => {
     if (!page.contents) return;
 
@@ -168,38 +169,14 @@ export function load(app) {
       `<link rel="apple-touch-icon" href="${base}favicons/apple-touch-icon.png" type="image/png" sizes="180x180"/>`,
     ].join("\n");
 
-    // Move custom.css to load after all theme stylesheets so overrides win the cascade
-    const customCssLink = page.contents.match(
-      /<link rel="stylesheet" href="[^"]*custom\.css"\/>/,
-    );
-    if (customCssLink) {
-      page.contents = page.contents.replace(customCssLink[0], "");
-    }
-
-    // Inject favicons, relocated custom CSS, and JSON-LD before </head>
-    const headInjections = [
-      faviconTags,
-      customCssLink ? customCssLink[0] : "",
-      jsonLdScript,
-    ]
+    // Inject favicons and JSON-LD before </head>
+    const headInjections = [faviconTags, jsonLdScript]
       .filter(Boolean)
       .join("\n");
 
     page.contents = page.contents.replace(
       "</head>",
       headInjections + "\n</head>",
-    );
-
-    // Inject script to mark the current sidebar nav link with a "current" class.
-    // TypeDoc does not natively add this class for document pages.
-    // The sidebar is populated asynchronously from compressed navigation data,
-    // so we use a MutationObserver to detect when links appear.
-    // Pathname comparison strips trailing slashes and .html extensions to handle
-    // servers with clean-URL mode (e.g. `serve` drops .html).
-    const currentNavScript = `<script>(function(){function norm(s){return s.replace(/\\/$/,"").replace(/\\.html$/,"");}function mark(){var p=norm(location.pathname);var links=document.querySelectorAll(".site-menu .tsd-navigation a[href]");for(var i=0;i<links.length;i++){var h=norm(new URL(links[i].href,location.href).pathname);if(h===p){links[i].classList.add("current");return true;}}return false;}function init(){if(!mark()){var c=document.getElementById("tsd-nav-container");if(c){new MutationObserver(function(m,o){if(mark())o.disconnect();}).observe(c,{childList:true,subtree:true});}}}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init);}else{init();}})();</script>`;
-    page.contents = page.contents.replace(
-      "</body>",
-      currentNavScript + "\n</body>",
     );
   });
 

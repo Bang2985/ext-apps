@@ -6,14 +6,10 @@ description: Learn how to protect MCP App tools with OAuth authorization, includ
 
 # Authorization
 
-MCP Apps can protect tools behind OAuth authorization. There are two approaches:
+MCP Apps can protect tools behind OAuth-based authorization, as defined in the [MCP specification](https://modelcontextprotocol.io/specification/latest/basic/authorization). There are two approaches:
 
-- **Per-server authorization** — The entire MCP server requires authentication at connection time. Every request must include a valid token, regardless of which tool is being called. This is the simpler model when all tools are sensitive.
-- **Per-tool authorization** — Only specific tools require authentication. Public tools work without a token, and the OAuth flow is triggered only when the user calls a protected tool. This lets you mix public and protected tools in the same server.
-
-Both approaches use the same underlying mechanism: HTTP `401` responses with [Protected Resource Metadata](https://modelcontextprotocol.io/specification/latest/basic/authorization#authorization-server-location). The difference is _when_ the `401` is returned — on every unauthenticated request, or only when a protected tool is called.
-
-For the full protocol specification — including OAuth 2.1 requirements, discovery mechanisms, client registration approaches, token handling, and security considerations — see the [MCP Authorization specification](https://modelcontextprotocol.io/specification/latest/basic/authorization).
+- **Per-server authorization** — The entire MCP server requires authorization at connection time. Every request must include a valid token, regardless of which tool is being called. This is the simpler model when all tools are sensitive.
+- **Per-tool authorization** — Only specific tools require authorization. Public tools work without a token, and the OAuth flow is triggered only when the user calls a protected tool. This lets you mix public and protected tools in the same server.
 
 ## Shared setup
 
@@ -21,9 +17,9 @@ Regardless of which approach you choose, you need OAuth discovery metadata and t
 
 ### OAuth discovery metadata
 
-The MCP specification requires servers to implement [authorization server discovery](https://modelcontextprotocol.io/specification/latest/basic/authorization#authorization-server-discovery) so clients know how to authenticate. Two well-known endpoints are needed:
+The MCP specification requires servers to implement [authorization server discovery](https://modelcontextprotocol.io/specification/latest/basic/authorization#authorization-server-discovery) so clients know how to obtain authorization. Two well-known endpoints are needed:
 
-**Protected Resource Metadata** (`/.well-known/oauth-protected-resource`) — tells clients where to find the Authorization Server. The MCP SDK's `mcpAuthRouter` handles this automatically.
+**[Protected Resource Metadata](https://datatracker.ietf.org/doc/html/rfc9728)** (`/.well-known/oauth-protected-resource`) — describes the resource server and identifies which authorization server(s) can issue tokens for it. The MCP SDK's `mcpAuthRouter` handles this automatically.
 
 **Authorization Server Metadata** (`/.well-known/oauth-authorization-server`) — advertises the authorization and token endpoints, supported scopes, and whether [Client ID Metadata Documents](https://modelcontextprotocol.io/specification/latest/basic/authorization#client-id-metadata-documents) (CIMD) is supported:
 
@@ -56,13 +52,13 @@ MCP servers must validate that tokens were issued specifically for them — see 
 
 ## Per-server authorization
 
-With per-server authorization, every request to the `/mcp` endpoint must include a valid Bearer token. Any unauthenticated request receives HTTP `401`, and the host must complete the OAuth flow before the client can use any tools. This is the right choice when all tools are sensitive and there's no value in allowing unauthenticated access.
+With per-server authorization, every request to the `/mcp` endpoint must include a valid Bearer token. Any unauthorized request receives HTTP `401`, and the host must complete the OAuth flow before the client can use any tools. This is the right choice when all tools are sensitive and there's no value in allowing unauthorized access.
 
 The TypeScript MCP SDK supports this out of the box via `mcpAuthRouter` and `ProxyOAuthServerProvider` — no custom HTTP handler logic is needed. See the [MCP SDK documentation](https://github.com/modelcontextprotocol/typescript-sdk) for setup details.
 
 ## Per-tool authorization
 
-With per-tool authorization, the `/mcp` endpoint handler inspects the raw JSON-RPC request body, checks whether any message targets a protected tool, and only enforces authentication for those calls. Public tools pass through without a token.
+With per-tool authorization, the `/mcp` endpoint handler inspects the raw JSON-RPC request body, checks whether any message targets a protected tool, and only enforces authorization for those calls. Public tools pass through without a token.
 
 ### How it works
 
@@ -146,7 +142,7 @@ The `WWW-Authenticate` header includes the [Protected Resource Metadata](https:/
 
 ### Defence-in-depth in tool handlers
 
-Even though the HTTP layer enforces authorization, protected tool handlers should also verify `authInfo` as a defence-in-depth measure. If the HTTP layer is misconfigured or bypassed, the tool handler catches it:
+Even though the HTTP layer enforces authorization, protected tool handlers should also verify `authInfo` as a defence-in-depth measure. If the HTTP layer is misconfigured or bypassed, the tool handler catches unauthorized access:
 
 ```ts
 registerAppTool(
@@ -163,7 +159,7 @@ registerAppTool(
         content: [
           {
             type: "text",
-            text: "Authentication required to access account data.",
+            text: "Authorization required to access account data.",
           },
         ],
       };
@@ -179,12 +175,12 @@ registerAppTool(
 
 ### UI-initiated auth escalation
 
-A powerful pattern is mixing public and protected tools in the same app. The app loads with public data (no auth required), and authentication is triggered only when the user performs a protected action. This is a practical application of the [step-up authorization flow](https://modelcontextprotocol.io/specification/latest/basic/authorization#step-up-authorization-flow) described in the spec:
+A powerful pattern is mixing public and protected tools in the same app. The app loads with public data (no authorization required), and the OAuth flow is triggered only when the user performs a protected action. This is a practical application of the [step-up authorization flow](https://modelcontextprotocol.io/specification/latest/basic/authorization#step-up-authorization-flow) described in the spec:
 
-1. A public tool (e.g., `manage_branch`) loads the UI with unauthenticated data
+1. A public tool (e.g., `manage_branch`) loads the UI without requiring authorization
 2. The user clicks a button that calls a protected tool via `app.callServerTool()`
 3. The MCP host receives HTTP `401` and automatically runs the OAuth flow
-4. After the user authenticates, the host retries the tool call with the new token
+4. After the user completes the OAuth flow, the host retries the tool call with the acquired token
 5. The protected data appears in the UI
 
 ```tsx
@@ -193,7 +189,7 @@ function BranchItem({ branch }: { branch: Branch }) {
 
   async function handleManage() {
     // This call may trigger the OAuth flow if the user
-    // hasn't authenticated yet — the host handles it
+    // hasn't been authorized yet — the host handles it
     // transparently.
     const result = await app.callServerTool({
       name: "manage_branch_admin",
@@ -212,4 +208,4 @@ function BranchItem({ branch }: { branch: Branch }) {
 }
 ```
 
-This pattern keeps the initial experience fast (no login wall) while securing sensitive operations behind authentication. The host manages the entire OAuth flow — the app code simply calls the tool and handles the result.
+This pattern keeps the initial experience fast (no login wall) while securing sensitive operations behind authorization. The host manages the entire OAuth flow — the app code simply calls the tool and handles the result.

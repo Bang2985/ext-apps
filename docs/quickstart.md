@@ -1,5 +1,6 @@
 ---
 title: Quickstart
+group: Getting Started
 description: Build your first MCP App step by step — create an MCP server with an interactive View that renders inside Claude Desktop and other MCP hosts.
 ---
 

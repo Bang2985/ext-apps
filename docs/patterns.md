@@ -1,5 +1,6 @@
 ---
 title: Patterns
+group: Getting Started
 description: Common patterns and recipes for building MCP Apps — polling, chunked data, binary resources, theming, fullscreen, model context, state persistence, and more.
 ---
 

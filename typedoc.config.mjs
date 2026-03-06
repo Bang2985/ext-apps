@@ -35,7 +35,7 @@ const config = {
   },
   includeVersion: false,
   categorizeByGroup: true,
-  groupOrder: ["Documents", "Security", "Modules", "*"],
+  groupOrder: ["Getting Started", "Security", "Modules", "*"],
   navigation: {
     includeGroups: true,
   },
@@ -51,11 +51,13 @@ const config = {
     "typedoc-github-theme",
     "./scripts/typedoc-plugin-fix-mermaid-entities.mjs",
     "./scripts/typedoc-plugin-seo.mjs",
+    "./scripts/typedoc-plugin-mcpstyle.mjs",
     "@boneskull/typedoc-plugin-mermaid",
   ],
   ignoredHighlightLanguages: ["mermaid"],
   locales: {
     en: {
+      kind_plural_document: "Getting Started",
       kind_plural_module: "API Documentation",
     },
   },
