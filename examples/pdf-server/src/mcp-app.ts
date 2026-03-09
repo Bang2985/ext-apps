@@ -5082,8 +5082,18 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         renderAnnotationPanel();
         break;
       case "get_pages":
-        // Handle async — don't block other commands
-        handleGetPages(cmd);
+        // Handle async — don't block the poll loop. But if it rejects,
+        // submit an empty payload so interact returns an error promptly
+        // instead of blocking 45s in waitForPageData.
+        handleGetPages(cmd).catch((err) => {
+          log.error("get_pages failed — submitting empty result:", err);
+          app
+            .callServerTool({
+              name: "submit_page_data",
+              arguments: { requestId: cmd.requestId, pages: [] },
+            })
+            .catch(() => {});
+        });
         break;
       case "file_changed": {
         // Skip our own save_pdf echo: either save is still in flight, or the

@@ -337,7 +337,9 @@ export type PdfCommand =
 // Pending get_pages Requests (request-response bridge via client)
 // =============================================================================
 
-const GET_PAGES_TIMEOUT_MS = 60_000; // 60s — rendering many pages can be slow
+// Keep well under the MCP SDK's DEFAULT_REQUEST_TIMEOUT_MSEC (60s) so we
+// reject first and return a real error instead of the client cancelling us.
+const GET_PAGES_TIMEOUT_MS = 45_000;
 
 interface PageDataEntry {
   page: number;
@@ -345,22 +347,33 @@ interface PageDataEntry {
   image?: string; // base64 PNG
 }
 
-interface PendingPageRequest {
-  resolve: (data: PageDataEntry[]) => void;
-  reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
+const pendingPageRequests = new Map<
+  string,
+  (data: PageDataEntry[] | Error) => void
+>();
 
-const pendingPageRequests = new Map<string, PendingPageRequest>();
-
-/** Wait for the client to render and submit page data for a given request. */
-function waitForPageData(requestId: string): Promise<PageDataEntry[]> {
+/**
+ * Wait for the viewer to render and submit page data.
+ * Rejects on timeout or when the interact request is aborted upstream.
+ */
+function waitForPageData(
+  requestId: string,
+  signal?: AbortSignal,
+): Promise<PageDataEntry[]> {
   return new Promise<PageDataEntry[]>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const settle = (v: PageDataEntry[] | Error) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       pendingPageRequests.delete(requestId);
-      reject(new Error("Timeout waiting for page data from viewer"));
-    }, GET_PAGES_TIMEOUT_MS);
-    pendingPageRequests.set(requestId, { resolve, reject, timer });
+      v instanceof Error ? reject(v) : resolve(v);
+    };
+    const onAbort = () => settle(new Error("interact request cancelled"));
+    const timer = setTimeout(
+      () => settle(new Error("Timeout waiting for page data from viewer")),
+      GET_PAGES_TIMEOUT_MS,
+    );
+    signal?.addEventListener("abort", onAbort);
+    pendingPageRequests.set(requestId, settle);
   });
 }
 
@@ -1768,6 +1781,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
     async function processInteractCommand(
       uuid: string,
       cmd: InteractCommand,
+      signal?: AbortSignal,
     ): Promise<{ content: ContentPart[]; isError?: boolean }> {
       const {
         action,
@@ -1938,18 +1952,11 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           }
           if (unknownNames.length > 0) {
             parts.push(`Unknown field(s) skipped: ${unknownNames.join(", ")}`);
-          }
-          // Include full field listing so the model can correct its fill_form calls
-          const info = viewFieldInfo.get(uuid);
-          if (info && info.length > 0) {
-            const fieldLines = info.map((f) => {
-              const label = f.label ? ` "${f.label}"` : "";
-              const nameStr = f.name || "(unnamed)";
-              return `  p${f.page}: ${nameStr}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}`;
-            });
-            parts.push(`All form fields:\n${fieldLines.join("\n")}`);
-          } else if (knownFields && knownFields.size > 0) {
-            parts.push(`Valid field names: ${[...knownFields].join(", ")}`);
+            // Only list valid names when the model got something wrong —
+            // display_pdf already returned the full field info on open.
+            if (knownFields && knownFields.size > 0) {
+              parts.push(`Valid field names: ${[...knownFields].join(", ")}`);
+            }
           }
           description = parts.join(". ");
           if (unknownNames.length > 0 && validFields.length === 0) {
@@ -1976,7 +1983,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
 
           let pageData: PageDataEntry[];
           try {
-            pageData = await waitForPageData(requestId);
+            pageData = await waitForPageData(requestId, signal);
           } catch (err) {
             return {
               content: [
@@ -2024,7 +2031,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
 
           let pageData: PageDataEntry[];
           try {
-            pageData = await waitForPageData(requestId);
+            pageData = await waitForPageData(requestId, signal);
           } catch (err) {
             return {
               content: [
@@ -2200,21 +2207,24 @@ Example — add a signature image and a stamp, then screenshot to verify:
             ),
         },
       },
-      async ({
-        viewUUID: uuid,
-        action,
-        page,
-        query,
-        matchIndex,
-        scale,
-        annotations,
-        ids,
-        color,
-        content,
-        fields,
-        intervals,
-        commands,
-      }): Promise<CallToolResult> => {
+      async (
+        {
+          viewUUID: uuid,
+          action,
+          page,
+          query,
+          matchIndex,
+          scale,
+          annotations,
+          ids,
+          color,
+          content,
+          fields,
+          intervals,
+          commands,
+        },
+        extra,
+      ): Promise<CallToolResult> => {
         // Build the list of commands to process
         const commandList: InteractCommand[] = commands
           ? commands
@@ -2253,7 +2263,11 @@ Example — add a signature image and a stamp, then screenshot to verify:
         let hasError = false;
 
         for (let i = 0; i < commandList.length; i++) {
-          const result = await processInteractCommand(uuid, commandList[i]);
+          const result = await processInteractCommand(
+            uuid,
+            commandList[i],
+            extra.signal,
+          );
           if (result.isError) {
             hasError = true;
           }
@@ -2293,11 +2307,9 @@ Example — add a signature image and a stamp, then screenshot to verify:
         _meta: { ui: { visibility: ["app"] } },
       },
       async ({ requestId, pages }): Promise<CallToolResult> => {
-        const pending = pendingPageRequests.get(requestId);
-        if (pending) {
-          clearTimeout(pending.timer);
-          pendingPageRequests.delete(requestId);
-          pending.resolve(pages);
+        const settle = pendingPageRequests.get(requestId);
+        if (settle) {
+          settle(pages);
           return {
             content: [
               { type: "text", text: `Submitted ${pages.length} page(s)` },
