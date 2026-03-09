@@ -80,11 +80,19 @@ export const CACHE_MAX_LIFETIME_MS = 60_000; // 60 seconds
 /** Max size for cached PDFs (defensive limit to prevent memory exhaustion) */
 export const CACHE_MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 
-/** Allowed local file paths (populated from CLI args) */
+/** Allowed local file paths (CLI args + file roots — read access). */
 export const allowedLocalFiles = new Set<string>();
 
-/** Allowed local directories (populated from MCP roots) */
+/** Allowed local directories (CLI args + directory roots — read access). */
 export const allowedLocalDirs = new Set<string>();
+
+/**
+ * Subset of allowedLocalFiles that came from CLI args (not MCP roots).
+ * Only these individual files are writable. File roots from the client
+ * are uploaded copies in ad-hoc hidden folders — treat as read-only.
+ * Directory roots are mounted folders; files UNDER them are writable.
+ */
+export const cliLocalFiles = new Set<string>();
 
 // Works both from source (server.ts) and compiled (dist/server.js)
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -1350,21 +1358,29 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
       const uuid = randomUUID();
 
       // Check writability for local files (governs save button visibility).
-      // Writable only if: (a) the file is explicitly in allowedLocalFiles
-      // (passed as a CLI arg, so the user clearly opted in), OR the file
-      // is STRICTLY UNDER an allowed directory root (isAncestorDir already
-      // excludes rel === "", so a root itself doesn't count); AND
-      // (b) the process has OS write permission (fs.access W_OK).
+      //
+      // Writable only if:
+      //   (a) the file was passed as a CLI arg — the user explicitly named
+      //       it when starting the server, so overwriting is clearly
+      //       intentional; OR
+      //   (b) the file is STRICTLY UNDER a directory root (isAncestorDir
+      //       excludes rel === "", so the root itself doesn't count).
+      //       Directory roots are mounted folders where saving makes sense.
+      //   AND the process has OS write permission.
+      //
+      // NOT writable: file roots from the MCP client. Those are typically
+      // uploaded copies in ad-hoc hidden folders (e.g. Claude Desktop's
+      // uploads directory) — the client doesn't expect them to change.
       let writable = false;
       if (isFileUrl(normalized) || isLocalPath(normalized)) {
         const localPath = isFileUrl(normalized)
           ? fileUrlToPath(normalized)
           : decodeURIComponent(normalized);
         const resolved = path.resolve(localPath);
-        const inAllowedScope =
-          allowedLocalFiles.has(resolved) ||
+        const inWriteScope =
+          cliLocalFiles.has(resolved) ||
           [...allowedLocalDirs].some((dir) => isAncestorDir(dir, resolved));
-        if (inAllowedScope) {
+        if (inWriteScope) {
           try {
             await fs.promises.access(resolved, fs.constants.W_OK);
             writable = true;
@@ -2336,9 +2352,30 @@ Example — add a signature image and a stamp, then screenshot to verify:
           isError: true,
         };
       }
+      const resolved = path.resolve(filePath);
+      // Enforce the same write scope the display_pdf writable flag uses.
+      // The viewer hides the save button for non-writable files, but we
+      // must not trust the client: a direct save_pdf call should also refuse.
+      const inWriteScope =
+        cliLocalFiles.has(resolved) ||
+        [...allowedLocalDirs].some((dir) => isAncestorDir(dir, resolved));
+      if (!inWriteScope) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "Save refused: file is not under a mounted directory root " +
+                "and was not passed as a CLI argument. MCP file roots are " +
+                "read-only (typically uploaded copies the client doesn't " +
+                "expect to change).",
+            },
+          ],
+          isError: true,
+        };
+      }
       try {
         const bytes = Buffer.from(data, "base64");
-        const resolved = path.resolve(filePath);
         await fs.promises.writeFile(resolved, bytes);
         const { mtimeMs } = await fs.promises.stat(resolved);
         // Don't suppress file_changed here — the saving viewer will recognise

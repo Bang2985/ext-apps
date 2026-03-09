@@ -14,6 +14,7 @@ import {
   pathToFileUrl,
   startFileWatch,
   stopFileWatch,
+  cliLocalFiles,
   CACHE_INACTIVITY_TIMEOUT_MS,
   CACHE_MAX_LIFETIME_MS,
   CACHE_MAX_PDF_SIZE_BYTES,
@@ -484,11 +485,13 @@ describe("file watching", () => {
     tmpFile = path.join(tmpDir, "test.pdf");
     fs.writeFileSync(tmpFile, Buffer.from("%PDF-1.4\n%test\n"));
     allowedLocalFiles.add(tmpFile);
+    cliLocalFiles.add(tmpFile); // save_pdf test needs write scope
   });
 
   afterEach(() => {
     stopFileWatch(uuid);
     allowedLocalFiles.delete(tmpFile);
+    cliLocalFiles.delete(tmpFile);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -576,6 +579,59 @@ describe("file watching", () => {
     expect(sc.filePath).toBe(tmpFile);
     expect(sc.mtimeMs).toBeGreaterThanOrEqual(before);
 
+    await client.close();
+    await server.close();
+  });
+
+  it("save_pdf refuses file roots from MCP client (not CLI)", async () => {
+    // Simulate: file is readable (in allowedLocalFiles via refreshRoots)
+    // but NOT in cliLocalFiles — it came from the client, not a CLI arg.
+    cliLocalFiles.delete(tmpFile);
+
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const original = fs.readFileSync(tmpFile);
+    const r = await client.callTool({
+      name: "save_pdf",
+      arguments: {
+        url: tmpFile,
+        data: Buffer.from("%PDF-1.4\nshould-not-write").toString("base64"),
+      },
+    });
+    expect(r.isError).toBe(true);
+    const text = (r.content as { text: string }[])[0].text;
+    expect(text).toContain("read-only");
+    // Verify the file was NOT modified
+    expect(fs.readFileSync(tmpFile)).toEqual(original);
+
+    await client.close();
+    await server.close();
+  });
+
+  it("save_pdf allows files under a directory root", async () => {
+    // File NOT in cliLocalFiles but under a mounted directory root
+    cliLocalFiles.delete(tmpFile);
+    allowedLocalDirs.add(tmpDir);
+
+    const server = createServer({ enableInteract: true });
+    const client = new Client({ name: "t", version: "1" });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(st), client.connect(ct)]);
+
+    const r = await client.callTool({
+      name: "save_pdf",
+      arguments: {
+        url: tmpFile,
+        data: Buffer.from("%PDF-1.4\nvia-dir-root").toString("base64"),
+      },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(tmpFile, "utf8")).toBe("%PDF-1.4\nvia-dir-root");
+
+    allowedLocalDirs.delete(tmpDir);
     await client.close();
     await server.close();
   });

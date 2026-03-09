@@ -20,6 +20,7 @@ import {
   pathToFileUrl,
   fileUrlToPath,
   allowedLocalFiles,
+  cliLocalFiles,
   DEFAULT_PDF,
   allowedLocalDirs,
 } from "./server.js";
@@ -138,6 +139,7 @@ async function main() {
         const s = fs.statSync(filePath);
         if (s.isFile()) {
           allowedLocalFiles.add(filePath);
+          cliLocalFiles.add(filePath);
           console.error(`[pdf-server] Registered local file: ${filePath}`);
         } else if (s.isDirectory()) {
           allowedLocalDirs.add(filePath);
