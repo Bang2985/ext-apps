@@ -58,23 +58,32 @@ const log = {
 };
 
 /**
- * Return `url` only if it parses to a scheme safe for `<img src>`, else
- * undefined. Blocks `javascript:` / `vbscript:` etc. to satisfy CodeQL's
- * js/xss + js/client-side-unvalidated-url-redirection checks. The server
- * normally resolves imageUrl to imageData; this is defense-in-depth for
- * the fetch-failure fallback path.
+ * Resolve an ImageAnnotation to a src string safe for `<img src>`.
+ * Returns the parsed-and-reserialized URL (`URL.href`) rather than the
+ * raw input so CodeQL's taint tracker recognises the sanitisation barrier
+ * (js/xss, js/client-side-unvalidated-url-redirection). Blocks
+ * `javascript:` / `vbscript:` etc. The server normally resolves
+ * imageUrl → imageData before enqueueing; the imageUrl branch here is
+ * defense-in-depth for the server-side fetch-failure fallback.
  */
-function safeImageSrc(url: string | undefined): string | undefined {
-  if (!url) return undefined;
+function safeImageSrc(def: {
+  imageData?: string;
+  mimeType?: string;
+  imageUrl?: string;
+}): string | undefined {
+  if (def.imageData) {
+    return `data:${def.mimeType || "image/png"};base64,${def.imageData}`;
+  }
+  if (!def.imageUrl) return undefined;
   try {
-    const scheme = new URL(url, document.baseURI).protocol;
+    const parsed = new URL(def.imageUrl, document.baseURI);
     if (
-      scheme === "https:" ||
-      scheme === "http:" ||
-      scheme === "data:" ||
-      scheme === "blob:"
+      parsed.protocol === "https:" ||
+      parsed.protocol === "http:" ||
+      parsed.protocol === "data:" ||
+      parsed.protocol === "blob:"
     ) {
-      return url;
+      return parsed.href;
     }
   } catch {
     // fall through
@@ -1727,9 +1736,7 @@ function paintAnnotationsOnCanvas(
           ctx.restore();
         } else {
           // Load image asynchronously into cache for next paint
-          const src = def.imageData
-            ? `data:${def.mimeType || "image/png"};base64,${def.imageData}`
-            : safeImageSrc(def.imageUrl);
+          const src = safeImageSrc(def);
           if (src) {
             const img = new Image();
             img.onload = () => {
@@ -2011,9 +2018,7 @@ function renderImageAnnotation(
     el.style.transformOrigin = "center center";
   }
 
-  const imgSrc = def.imageData
-    ? `data:${def.mimeType || "image/png"};base64,${def.imageData}`
-    : safeImageSrc(def.imageUrl);
+  const imgSrc = safeImageSrc(def);
   if (imgSrc) {
     const img = document.createElement("img");
     img.src = imgSrc;
