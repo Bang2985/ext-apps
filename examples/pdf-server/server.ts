@@ -2,7 +2,7 @@
  * PDF MCP Server
  *
  * An MCP server that displays PDFs in an interactive viewer.
- * Supports local files and remote URLs from academic sources (arxiv, biorxiv, etc).
+ * Supports local files and remote HTTPS URLs.
  *
  * Tools:
  * - list_pdfs: List available PDFs
@@ -14,14 +14,16 @@ import { randomUUID } from "crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   registerAppResource,
   registerAppTool,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
-import type {
-  CallToolResult,
-  ReadResourceResult,
+import {
+  RootsListChangedNotificationSchema,
+  type CallToolResult,
+  type ReadResourceResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
@@ -42,28 +44,11 @@ export const CACHE_MAX_LIFETIME_MS = 60_000; // 60 seconds
 /** Max size for cached PDFs (defensive limit to prevent memory exhaustion) */
 export const CACHE_MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
 
-/** Allowed remote origins (security allowlist) */
-export const allowedRemoteOrigins = new Set([
-  "https://agrirxiv.org",
-  "https://arxiv.org",
-  "https://chemrxiv.org",
-  "https://edarxiv.org",
-  "https://engrxiv.org",
-  "https://hal.science",
-  "https://osf.io",
-  "https://psyarxiv.com",
-  "https://ssrn.com",
-  "https://www.biorxiv.org",
-  "https://www.eartharxiv.org",
-  "https://www.medrxiv.org",
-  "https://www.preprints.org",
-  "https://www.researchsquare.com",
-  "https://www.sportarxiv.org",
-  "https://zenodo.org",
-]);
-
 /** Allowed local file paths (populated from CLI args) */
 export const allowedLocalFiles = new Set<string>();
+
+/** Allowed local directories (populated from MCP roots) */
+export const allowedLocalDirs = new Set<string>();
 
 // Works both from source (server.ts) and compiled (dist/server.js)
 const DIST_DIR = import.meta.filename.endsWith(".ts")
@@ -75,7 +60,7 @@ const DIST_DIR = import.meta.filename.endsWith(".ts")
 // =============================================================================
 
 export function isFileUrl(url: string): boolean {
-  return url.startsWith("file://");
+  return url.startsWith("file://") || url.startsWith("computer://");
 }
 
 export function isArxivUrl(url: string): boolean {
@@ -96,7 +81,8 @@ export function normalizeArxivUrl(url: string): string {
 }
 
 export function fileUrlToPath(fileUrl: string): string {
-  return decodeURIComponent(fileUrl.replace("file://", ""));
+  // Support both file:// and computer:// (used by some clients for local files)
+  return decodeURIComponent(fileUrl.replace(/^(?:file|computer):\/\//, ""));
 }
 
 export function pathToFileUrl(filePath: string): string {
@@ -104,29 +90,93 @@ export function pathToFileUrl(filePath: string): string {
   return `file://${encodeURIComponent(absolutePath).replace(/%2F/g, "/")}`;
 }
 
-export function validateUrl(url: string): { valid: boolean; error?: string } {
-  if (isFileUrl(url)) {
-    const filePath = fileUrlToPath(url);
-    if (!allowedLocalFiles.has(filePath)) {
-      return {
-        valid: false,
-        error: `Local file not in allowed list: ${filePath}`,
-      };
+/**
+ * Check if `dir` is an ancestor of `filePath` using path.relative,
+ * which is more robust than string prefix matching (handles normalization).
+ */
+export function isAncestorDir(dir: string, filePath: string): boolean {
+  const rel = path.relative(dir, filePath);
+  // Must be non-empty (not the dir itself when checking files),
+  // must not start with ".." (escaping), and must not be absolute (different root).
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * Check if `url` looks like an absolute local file path (not a URL scheme).
+ * Handles Unix paths (/...), home-relative (~), and Windows drive letters (C:\...).
+ */
+function isLocalPath(url: string): boolean {
+  return (
+    url.startsWith("/") || url.startsWith("~") || /^[A-Za-z]:[/\\]/.test(url)
+  );
+}
+
+export function validateUrl(url: string): {
+  valid: boolean;
+  error?: string;
+} {
+  if (isFileUrl(url) || isLocalPath(url)) {
+    // fileUrlToPath already decodes percent-encoding; for bare paths,
+    // decode here in case the client sends %20 for spaces etc.
+    const filePath = isFileUrl(url)
+      ? fileUrlToPath(url)
+      : decodeURIComponent(url);
+    const resolved = path.resolve(filePath);
+
+    // Check exact match (CLI args / roots)
+    if (allowedLocalFiles.has(resolved)) {
+      if (!fs.existsSync(resolved)) {
+        return { valid: false, error: `File not found: ${resolved}` };
+      }
+      return { valid: true };
     }
-    if (!fs.existsSync(filePath)) {
-      return { valid: false, error: `File not found: ${filePath}` };
+
+    // Check directory match (MCP roots / CLI dirs).
+    // Try both the raw path and its realpath (resolves symlinks).
+    let realResolved: string | undefined;
+    try {
+      realResolved = fs.realpathSync(resolved);
+    } catch {
+      // File may not exist yet at this path
     }
-    return { valid: true };
+    if (
+      [...allowedLocalDirs].some((dir) => {
+        let realDir: string | undefined;
+        try {
+          realDir = fs.realpathSync(dir);
+        } catch {
+          // Dir may not exist
+        }
+        return (
+          isAncestorDir(dir, resolved) ||
+          (realResolved != null && isAncestorDir(dir, realResolved)) ||
+          (realDir != null && isAncestorDir(realDir, resolved)) ||
+          (realDir != null &&
+            realResolved != null &&
+            isAncestorDir(realDir, realResolved))
+        );
+      })
+    ) {
+      if (!fs.existsSync(resolved)) {
+        return { valid: false, error: `File not found: ${resolved}` };
+      }
+      return { valid: true };
+    }
+
+    console.error(
+      `[pdf-server] Local file not in allowed list: ${resolved}\n  Allowed dirs: ${[...allowedLocalDirs].join(", ")}`,
+    );
+    return {
+      valid: false,
+      error: `Local file not in allowed list: ${resolved}\nAllowed directories: ${[...allowedLocalDirs].join(", ")}`,
+    };
   }
 
-  // Remote URL - check against allowed origins
+  // Remote URL - require HTTPS
   try {
     const parsed = new URL(url);
-    const origin = `${parsed.protocol}//${parsed.hostname}`;
-    if (
-      ![...allowedRemoteOrigins].some((allowed) => origin.startsWith(allowed))
-    ) {
-      return { valid: false, error: `Origin not allowed: ${origin}` };
+    if (parsed.protocol !== "https:") {
+      return { valid: false, error: `Only HTTPS URLs are allowed: ${url}` };
     }
     return { valid: true };
   } catch {
@@ -246,8 +296,10 @@ export function createPdfCache(): PdfCache {
     const normalized = isArxivUrl(url) ? normalizeArxivUrl(url) : url;
     const clampedByteCount = Math.min(byteCount, MAX_CHUNK_BYTES);
 
-    if (isFileUrl(normalized)) {
-      const filePath = fileUrlToPath(normalized);
+    if (isFileUrl(normalized) || isLocalPath(normalized)) {
+      const filePath = isFileUrl(normalized)
+        ? fileUrlToPath(normalized)
+        : decodeURIComponent(normalized);
       const stats = await fs.promises.stat(filePath);
       const totalBytes = stats.size;
 
@@ -277,17 +329,21 @@ export function createPdfCache(): PdfCache {
       return sliceToChunk(cached, offset, clampedByteCount);
     }
 
-    // Remote URL - Range request
-    const response = await fetch(normalized, {
+    // Remote URL - try Range request, fall back to full GET if not supported
+    let response = await fetch(normalized, {
       headers: {
         Range: `bytes=${offset}-${offset + clampedByteCount - 1}`,
       },
     });
 
+    // If server doesn't support Range (501, 416, etc.), fall back to plain GET
     if (!response.ok && response.status !== 206) {
-      throw new Error(
-        `Range request failed: ${response.status} ${response.statusText}`,
-      );
+      response = await fetch(normalized);
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch PDF: ${response.status} ${response.statusText}`,
+        );
+      }
     }
 
     // HTTP 200 means the server ignored our Range header and sent the full body.
@@ -343,16 +399,98 @@ export function createPdfCache(): PdfCache {
 }
 
 // =============================================================================
+// MCP Roots
+// =============================================================================
+
+/**
+ * Query the client for roots and update allowedLocalDirs with any file:// roots
+ * that point to existing directories.
+ */
+async function refreshRoots(server: Server): Promise<void> {
+  if (!server.getClientCapabilities()?.roots) return;
+
+  try {
+    const { roots } = await server.listRoots();
+    allowedLocalDirs.clear();
+    for (const root of roots) {
+      if (isFileUrl(root.uri)) {
+        const dir = fileUrlToPath(root.uri);
+        const resolved = path.resolve(dir);
+        try {
+          const s = fs.statSync(resolved);
+          if (s.isFile()) {
+            console.error(
+              `[pdf-server] Root is a file, not a directory (skipped): ${resolved}`,
+            );
+            allowedLocalFiles.add(resolved);
+          } else if (s.isDirectory()) {
+            allowedLocalDirs.add(resolved);
+            console.error(`[pdf-server] Root directory allowed: ${resolved}`);
+          }
+        } catch {
+          // stat failed — skip non-existent roots
+        }
+      }
+    }
+  } catch (err) {
+    console.error(
+      `[pdf-server] Failed to list roots: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
+// =============================================================================
 // MCP Server Factory
 // =============================================================================
 
-export function createServer(): McpServer {
+export interface CreateServerOptions {
+  /**
+   * Whether to honour MCP roots sent by the client.
+   *
+   * When a server is exposed over HTTP, the connecting client is
+   * typically remote and may advertise `roots` that refer to
+   * directories on the **client's** file system.  Because the server
+   * resolves those paths locally, accepting them by default would give
+   * the remote client access to arbitrary directories on the
+   * **server's** machine.
+   *
+   * For stdio the client is typically local (e.g. Claude Desktop on the
+   * same machine), so roots are safe and enabled by default.
+   *
+   * Set this to `true` for HTTP only when you trust the client, or
+   * pass the `--use-client-roots` CLI flag.
+   *
+   * @default false
+   */
+  useClientRoots?: boolean;
+}
+
+export function createServer(options: CreateServerOptions = {}): McpServer {
+  const { useClientRoots = false } = options;
   const server = new McpServer({ name: "PDF Server", version: "2.0.0" });
+
+  if (useClientRoots) {
+    // Fetch roots on initialization and subscribe to changes
+    server.server.oninitialized = () => {
+      refreshRoots(server.server);
+    };
+    server.server.setNotificationHandler(
+      RootsListChangedNotificationSchema,
+      async () => {
+        await refreshRoots(server.server);
+      },
+    );
+  } else {
+    console.error(
+      "[pdf-server] Client roots are ignored (default for remote transports). " +
+        "Pass --use-client-roots to allow the client to expose local directories.",
+    );
+  }
 
   // Create session-local cache (isolated per server instance)
   const { readPdfRange } = createPdfCache();
 
-  // Tool: list_pdfs - List available PDFs (local files + allowed origins)
+  // Tool: list_pdfs - List available PDFs
   server.tool(
     "list_pdfs",
     "List available PDFs that can be displayed",
@@ -365,17 +503,27 @@ export function createServer(): McpServer {
         pdfs.push({ url: pathToFileUrl(filePath), type: "local" });
       }
 
-      // Note: Remote URLs from allowed origins can be loaded dynamically
-      const text =
-        pdfs.length > 0
-          ? `Available PDFs:\n${pdfs.map((p) => `- ${p.url} (${p.type})`).join("\n")}\n\nRemote PDFs from ${[...allowedRemoteOrigins].join(", ")} can also be loaded dynamically.`
-          : `No local PDFs configured. Remote PDFs from ${[...allowedRemoteOrigins].join(", ")} can be loaded dynamically.`;
+      // Build text
+      const parts: string[] = [];
+      if (pdfs.length > 0) {
+        parts.push(
+          `Available PDFs:\n${pdfs.map((p) => `- ${p.url} (${p.type})`).join("\n")}`,
+        );
+      }
+      if (allowedLocalDirs.size > 0) {
+        parts.push(
+          `Allowed local directories (from client roots):\n${[...allowedLocalDirs].map((d) => `- ${d}`).join("\n")}\nAny PDF file under these directories can be displayed.`,
+        );
+      }
+      parts.push(
+        `Any remote PDF accessible via HTTPS can also be loaded dynamically.`,
+      );
 
       return {
-        content: [{ type: "text", text }],
+        content: [{ type: "text", text: parts.join("\n\n") }],
         structuredContent: {
           localFiles: pdfs.filter((p) => p.type === "local").map((p) => p.url),
-          allowedOrigins: [...allowedRemoteOrigins],
+          allowedDirectories: [...allowedLocalDirs],
         },
       };
     },
@@ -389,7 +537,7 @@ export function createServer(): McpServer {
       title: "Read PDF Bytes",
       description: "Read a range of bytes from a PDF (max 512KB per request)",
       inputSchema: {
-        url: z.string().describe("PDF URL"),
+        url: z.string().describe("PDF URL or local file path"),
         offset: z.number().min(0).default(0).describe("Byte offset"),
         byteCount: z
           .number()
@@ -419,7 +567,11 @@ export function createServer(): McpServer {
 
       try {
         const normalized = isArxivUrl(url) ? normalizeArxivUrl(url) : url;
-        const { data, totalBytes } = await readPdfRange(url, offset, byteCount);
+        const { data, totalBytes } = await readPdfRange(
+          normalized,
+          offset,
+          byteCount,
+        );
 
         // Base64 encode for JSON transport
         const bytes = Buffer.from(data).toString("base64");
@@ -455,11 +607,6 @@ export function createServer(): McpServer {
     },
   );
 
-  // Build allowed domains list for tool description (strip https:// and www.)
-  const allowedDomains = [...allowedRemoteOrigins]
-    .map((origin) => origin.replace(/^https?:\/\/(www\.)?/, ""))
-    .join(", ");
-
   // Tool: display_pdf - Show interactive viewer
   registerAppTool(
     server,
@@ -470,14 +617,19 @@ export function createServer(): McpServer {
 
 Accepts:
 - Local files explicitly added to the server (use list_pdfs to see available files)
-- Remote PDFs from: ${allowedDomains}`,
+- Local files under directories provided by the client as MCP roots
+- Any remote PDF accessible via HTTPS`,
       inputSchema: {
-        url: z.string().default(DEFAULT_PDF).describe("PDF URL"),
+        url: z
+          .string()
+          .default(DEFAULT_PDF)
+          .describe("PDF URL or local file path"),
         page: z.number().min(1).default(1).describe("Initial page"),
       },
       outputSchema: z.object({
         url: z.string(),
         initialPage: z.number(),
+        totalBytes: z.number(),
       }),
       _meta: { ui: { resourceUri: RESOURCE_URI } },
     },
@@ -492,11 +644,15 @@ Accepts:
         };
       }
 
+      // Probe file size so the client can set up range transport without an extra fetch
+      const { totalBytes } = await readPdfRange(normalized, 0, 1);
+
       return {
         content: [{ type: "text", text: `Displaying PDF: ${normalized}` }],
         structuredContent: {
           url: normalized,
           initialPage: page,
+          totalBytes,
         },
         _meta: {
           viewUUID: randomUUID(),

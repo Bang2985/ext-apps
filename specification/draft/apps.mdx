@@ -683,6 +683,8 @@ interface HostCapabilities {
   experimental?: {};
   /** Host supports opening external URLs. */
   openLinks?: {};
+  /** Host supports file downloads via ui/download-file. */
+  downloadFile?: {};
   /** Host can proxy tool calls to the MCP server. */
   serverTools?: {
     /** Host supports tools/list_changed notifications. */
@@ -1054,6 +1056,73 @@ MCP Apps introduces additional JSON-RPC methods for UI-specific functionality:
 ```
 
 Host SHOULD open the URL in the user's default browser or a new tab.
+
+`ui/download-file` - Request host to download a file
+
+```typescript
+// Request (EmbeddedResource — inline content)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "ui/download-file",
+  params: {
+    contents: [
+      {
+        type: "resource",
+        resource: {
+          uri: "file:///export.json",       // Used for suggested filename
+          mimeType: "application/json",
+          text: "{ ... }"                   // Text content (or `blob` for base64 binary)
+        }
+      }
+    ]
+  }
+}
+
+// Request (ResourceLink — host fetches)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "ui/download-file",
+  params: {
+    contents: [
+      {
+        type: "resource_link",
+        uri: "https://api.example.com/reports/q4.pdf",
+        name: "Q4 Report",
+        mimeType: "application/pdf"
+      }
+    ]
+  }
+}
+
+// Success Response
+{
+  jsonrpc: "2.0",
+  id: 1,
+  result: {}  // Empty result on success
+}
+
+// Error Response (if denied or failed)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  error: {
+    code: -32000,  // Implementation-defined error
+    message: "Download denied by user" | "Invalid content" | "Policy violation"
+  }
+}
+```
+
+MCP Apps run in sandboxed iframes where direct file downloads are blocked (`allow-downloads` is not set). `ui/download-file` provides a host-mediated mechanism for apps to offer file exports — useful for visualization tools (SVG/PNG export), document editors, data analysis tools, and any app that produces downloadable artifacts.
+
+The `contents` array uses standard MCP resource types (`EmbeddedResource` and `ResourceLink`), avoiding custom content formats. For `EmbeddedResource`, content is inline via `text` (UTF-8) or `blob` (base64). For `ResourceLink`, the host can retrieve the content directly from the URI.
+
+Host behavior:
+* Host SHOULD show a confirmation dialog before initiating the download.
+* For `EmbeddedResource`, host SHOULD derive the filename from the last segment of `resource.uri`.
+* Host MAY reject the download based on security policy, file size limits, or user preferences.
+* Host SHOULD sanitize filenames to prevent path traversal.
 
 `ui/message` - Send message content to the host's chat interface
 

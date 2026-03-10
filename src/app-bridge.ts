@@ -69,6 +69,9 @@ import {
   McpUiOpenLinkRequest,
   McpUiOpenLinkRequestSchema,
   McpUiOpenLinkResult,
+  McpUiDownloadFileRequest,
+  McpUiDownloadFileRequestSchema,
+  McpUiDownloadFileResult,
   McpUiResourceTeardownRequest,
   McpUiResourceTeardownResultSchema,
   McpUiSandboxProxyReadyNotification,
@@ -136,7 +139,7 @@ export function getToolUiResourceUri(tool: Partial<Tool>): string | undefined {
  */
 export function isToolVisibilityModelOnly(tool: Partial<Tool>): boolean {
   const uiMeta = tool._meta?.ui as McpUiToolMeta | undefined;
-  const visibility = uiMeta?.visibility as Array<"model" | "app"> | undefined;
+  const visibility = uiMeta?.visibility;
   if (!visibility) return false;
   if (visibility.length === 1 && visibility[0] === "model") return true;
   return false;
@@ -150,7 +153,7 @@ export function isToolVisibilityModelOnly(tool: Partial<Tool>): boolean {
  */
 export function isToolVisibilityAppOnly(tool: Partial<Tool>): boolean {
   const uiMeta = tool._meta?.ui as McpUiToolMeta | undefined;
-  const visibility = uiMeta?.visibility as Array<"model" | "app"> | undefined;
+  const visibility = uiMeta?.visibility;
   if (!visibility) return false;
   if (visibility.length === 1 && visibility[0] === "app") return true;
   return false;
@@ -656,6 +659,62 @@ export class AppBridge extends Protocol<
   ) {
     this.setRequestHandler(
       McpUiOpenLinkRequestSchema,
+      async (request, extra) => {
+        return callback(request.params, extra);
+      },
+    );
+  }
+
+  /**
+   * Register a handler for file download requests from the View.
+   *
+   * The View sends `ui/download-file` requests when the user wants to
+   * download a file. The params contain an array of MCP resource content
+   * items — either `EmbeddedResource` (inline data) or `ResourceLink`
+   * (URI the host can fetch). The host should show a confirmation dialog
+   * and then trigger the download.
+   *
+   * @param callback - Handler that receives download params and returns a result
+   *   - `params.contents` - Array of `EmbeddedResource` or `ResourceLink` items
+   *   - `extra` - Request metadata (abort signal, session info)
+   *   - Returns: `Promise<McpUiDownloadFileResult>` with optional `isError` flag
+   *
+   * @example
+   * ```ts
+   * bridge.ondownloadfile = async ({ contents }, extra) => {
+   *   for (const item of contents) {
+   *     if (item.type === "resource") {
+   *       // EmbeddedResource — inline content
+   *       const res = item.resource;
+   *       const blob = res.blob
+   *         ? new Blob([Uint8Array.from(atob(res.blob), c => c.charCodeAt(0))], { type: res.mimeType })
+   *         : new Blob([res.text ?? ""], { type: res.mimeType });
+   *       const url = URL.createObjectURL(blob);
+   *       const link = document.createElement("a");
+   *       link.href = url;
+   *       link.download = res.uri.split("/").pop() ?? "download";
+   *       link.click();
+   *       URL.revokeObjectURL(url);
+   *     } else if (item.type === "resource_link") {
+   *       // ResourceLink — host fetches or opens directly
+   *       window.open(item.uri, "_blank");
+   *     }
+   *   }
+   *   return {};
+   * };
+   * ```
+   *
+   * @see {@link McpUiDownloadFileRequest `McpUiDownloadFileRequest`} for the request type
+   * @see {@link McpUiDownloadFileResult `McpUiDownloadFileResult`} for the result type
+   */
+  set ondownloadfile(
+    callback: (
+      params: McpUiDownloadFileRequest["params"],
+      extra: RequestHandlerExtra,
+    ) => Promise<McpUiDownloadFileResult>,
+  ) {
+    this.setRequestHandler(
+      McpUiDownloadFileRequestSchema,
       async (request, extra) => {
         return callback(request.params, extra);
       },
@@ -1457,6 +1516,11 @@ export class AppBridge extends Protocol<
    * ```
    */
   async connect(transport: Transport) {
+    if (this.transport) {
+      throw new Error(
+        "AppBridge is already connected. Call close() before connecting again.",
+      );
+    }
     if (this._client) {
       // When a client was passed to the constructor, automatically forward
       // MCP requests/notifications between the view and the server

@@ -167,7 +167,9 @@ export function loadSandboxProxy(
   // Prevent reload
   if (iframe.src) return Promise.resolve(false);
 
-  // Set sandbox attribute on outer iframe (must match inner iframe capabilities)
+  // Set sandbox attribute on outer iframe. In practice, these will match the inner
+  // iframe sandbox capabilities, but at a minimum they must be a superset of the
+  // inner iframe's sandbox allowances.
   iframe.setAttribute("sandbox", buildSandboxAttribute(sandbox));
 
   // Set Permission Policy allow attribute based on requested permissions
