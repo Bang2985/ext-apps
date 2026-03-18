@@ -1242,6 +1242,19 @@ function selectAnnotation(id: string | null, additive = false): void {
     }
   }
 
+  // Re-render the panel so accordion sections open/close to match selection
+  renderAnnotationPanel();
+
+  // Scroll the selected card into view in the sidebar
+  if (id) {
+    const card = annotationsPanelListEl.querySelector(
+      `.annotation-card[data-annotation-id="${id}"]`,
+    );
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
   // Sync sidebar
   syncSidebarSelection();
   // Auto-dock floating panel away from selected annotation

@@ -491,12 +491,18 @@ body {
   font-size: 0.8rem;
   white-space: pre-wrap;
   max-width: 200px;
-  z-index: 10;
+  z-index: 100; /* Must float above all sibling annotation elements */
   pointer-events: none;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 .annotation-note:hover .annotation-tooltip {
   display: block;
+}
+
+/* When hovering a note, raise the entire annotation layer above the form
+   layer so the tooltip isn't clipped by the z-index:4 form overlay. */
+.annotation-layer:has(.annotation-note:hover) {
+  z-index: 5;
 }
 
 .annotation-rectangle {
