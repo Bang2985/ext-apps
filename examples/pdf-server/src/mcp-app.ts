@@ -1363,10 +1363,12 @@ function setupAnnotationInteraction(
     const label = getAnnotationLabel(tracked.def);
     const previewText = getAnnotationPreview(tracked.def);
     const desc = previewText ? `${label}: ${previewText}` : label;
-    app.sendMessage({
-      role: "user",
-      content: [{ type: "text", text: `update ${desc}: ` }],
-    });
+    void app
+      .sendMessage({
+        role: "user",
+        content: [{ type: "text", text: `update ${desc}: ` }],
+      })
+      .catch(log.error);
   });
 }
 
@@ -2363,7 +2365,7 @@ function updateAnnotationsBadge(): void {
 function getAnnotationLabel(def: PdfAnnotationDef): string {
   switch (def.type) {
     case "highlight":
-      return def.content ? "Highlight" : "Highlight";
+      return "Highlight";
     case "underline":
       return "Underline";
     case "strikethrough":
@@ -2678,15 +2680,12 @@ function createAnnotationCard(tracked: TrackedAnnotation): HTMLElement {
     const label = getAnnotationLabel(def);
     const previewText = getAnnotationPreview(def);
     const desc = previewText ? `${label}: ${previewText}` : label;
-    app.sendMessage({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `update ${desc}: `,
-        },
-      ],
-    });
+    void app
+      .sendMessage({
+        role: "user",
+        content: [{ type: "text", text: `update ${desc}: ` }],
+      })
+      .catch(log.error);
   });
 
   return card;
@@ -2801,15 +2800,12 @@ function createFormFieldCard(name: string): HTMLElement {
     focusedFieldName = name;
     updatePageContext();
     const fieldLabel = getFormFieldLabel(name);
-    app.sendMessage({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `update ${fieldLabel}: `,
-        },
-      ],
-    });
+    void app
+      .sendMessage({
+        role: "user",
+        content: [{ type: "text", text: `update ${fieldLabel}: ` }],
+      })
+      .catch(log.error);
   });
 
   card.appendChild(row);
@@ -3232,9 +3228,10 @@ function findTextRectsFromCache(query: string, pageNum: number): Rect[] {
   const idx = lowerText.indexOf(lowerQuery);
   if (idx === -1) return [];
 
-  // Approximate: place a highlight rect in the middle of the page
-  // This will be re-computed accurately when the user visits the page
-  return [{ x: 72, y: 400, width: 200, height: 14 }];
+  // Text exists in the cache but the text-layer DOM for this page isn't
+  // rendered yet — we can't compute accurate rects. Returning a placeholder
+  // would persist wrong coordinates; return empty and let the caller skip.
+  return [];
 }
 
 // =============================================================================
@@ -4907,8 +4904,12 @@ async function startPreloading() {
       continue;
     }
 
-    // Yield to interactive navigation
-    while (preloadPaused) await new Promise((r) => setTimeout(r, 50));
+    // Yield to interactive navigation. Re-check gen inside the wait so
+    // teardown doesn't spin here forever if it fires mid-pause.
+    while (preloadPaused && gen === loadGeneration) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    if (gen !== loadGeneration) return;
 
     try {
       const page = await pdfDocument.getPage(i);
@@ -4950,7 +4951,7 @@ app.ontoolresult = async (result: CallToolResult) => {
   viewUUID = result._meta?.viewUUID ? String(result._meta.viewUUID) : undefined;
   interactEnabled = result._meta?.interactEnabled === true;
   fileWritable = result._meta?.writable === true;
-  // TODO remove — debug: dump writability inputs so we can eyeball the mismatch
+  // Debug bubble: server only emits _debug when --debug is set.
   if (result._meta?._debug !== undefined) showDebugBubble(result._meta._debug);
 
   // Restore saved page or use initial page
@@ -4980,11 +4981,9 @@ app.ontoolresult = async (result: CallToolResult) => {
     loadingIndicatorEl.style.display = "none";
 
     showViewer();
-    // TODO: Re-enable capability check when host downloadFile is fixed:
     downloadBtn.style.display = app.getHostCapabilities()?.downloadFile
       ? ""
       : "none";
-    // downloadBtn.style.display = "";
     // Save button visibility driven by setDirty()/updateSaveBtn();
     // restoreAnnotations() above may have already shown it via setDirty(true).
     updateSaveBtn();
@@ -5346,6 +5345,13 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
 app.onteardown = async () => {
   log.info("App is being torn down");
   stopPolling();
+  // Bump loadGeneration so startPreloading's gen check fails and the
+  // loop exits on its next iteration (reuses the reload-abort mechanism).
+  loadGeneration++;
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
   return {};
 };
 
