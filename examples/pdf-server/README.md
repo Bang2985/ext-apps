@@ -316,17 +316,17 @@ src/
 
 Supported annotation types (synced with PDF.js):
 
-| Type            | Properties                                  | PDF Subtype  |
-| --------------- | ------------------------------------------- | ------------ |
-| `highlight`     | `rects`, `color?`, `content?`               | `/Highlight` |
-| `underline`     | `rects`, `color?`                           | `/Underline` |
-| `strikethrough` | `rects`, `color?`                           | `/StrikeOut` |
-| `note`          | `x`, `y`, `content`, `color?`               | `/Text`      |
-| `rectangle`     | `x`, `y`, `width`, `height`, `color?`, etc. | `/Square`    |
-| `circle`        | `x`, `y`, `width`, `height`, `color?`, etc. | `/Circle`    |
-| `line`          | `x1`, `y1`, `x2`, `y2`, `color?`            | `/Line`      |
-| `freetext`      | `x`, `y`, `content`, `fontSize?`, `color?`  | `/FreeText`  |
-| `stamp`         | `x`, `y`, `label`, `color?`, `rotation?`    | `/Stamp`     |
+| Type            | Properties                                                         | PDF Subtype  |
+| --------------- | ------------------------------------------------------------------ | ------------ |
+| `highlight`     | `rects`, `color?`, `content?`                                      | `/Highlight` |
+| `underline`     | `rects`, `color?`                                                  | `/Underline` |
+| `strikethrough` | `rects`, `color?`                                                  | `/StrikeOut` |
+| `note`          | `x`, `y`, `content`, `color?`                                      | `/Text`      |
+| `rectangle`     | `x`, `y`, `width`, `height`, `color?`, etc.                        | `/Square`    |
+| `circle`        | `x`, `y`, `width`, `height`, `color?`, etc.                        | `/Circle`    |
+| `line`          | `x1`, `y1`, `x2`, `y2`, `color?`                                   | `/Line`      |
+| `freetext`      | `x`, `y`, `content`, `fontSize?`, `color?`                         | `/FreeText`  |
+| `stamp`         | `x`, `y`, `label`, `color?`, `rotation?`                           | `/Stamp`     |
 | `image`         | `x`, `y`, `width`, `height`, `imageData?`/`imageUrl?`, `rotation?` | `/Stamp`     |
 
 ## Dependencies

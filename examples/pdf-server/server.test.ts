@@ -811,10 +811,8 @@ describe("interact tool", () => {
         setTimeout(() => reject(new Error("poll timeout")), timeoutMs),
       ),
     ]);
-    return (
-      (result as { structuredContent?: { commands?: unknown[] } })
-        .structuredContent?.commands ?? []
-    ) as Array<Record<string, unknown>>;
+    return ((result as { structuredContent?: { commands?: unknown[] } })
+      .structuredContent?.commands ?? []) as Array<Record<string, unknown>>;
   }
 
   function firstText(r: Awaited<ReturnType<Client["callTool"]>>): string {
