@@ -761,6 +761,46 @@ function updateTitleDisplay(): void {
   titleEl.title = pdfUrl;
 }
 
+/**
+ * Debug overlay: fixed-position bubble, bottom-left. Pretty-printed JSON
+ * dump of whatever the server stuffed into `_meta._debug`. Tooltips inside
+ * sandboxed iframes are unreliable; this survives the cross-origin barrier
+ * and shows up in screenshots.
+ */
+function showDebugBubble(debug: unknown): void {
+  const bubble = document.createElement("div");
+  const base =
+    "position:fixed;bottom:8px;left:8px;z-index:99999;" +
+    "background:rgba(20,20,30,0.92);color:#cfe;padding:8px 12px;" +
+    "font:11px/1.4 monospace;border-radius:6px;" +
+    "box-shadow:0 2px 8px rgba(0,0,0,0.4);white-space:pre;cursor:pointer;" +
+    "transition:max-width 0.15s ease;";
+  // Collapsed: clip to 60vw. Hover: expand to fit full paths (up to ~96vw),
+  // scrollable both axes in case the JSON is tall.
+  const collapsed =
+    base +
+    "max-width:60vw;max-height:40vh;overflow:hidden;text-overflow:ellipsis;";
+  const expanded =
+    base + "max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;";
+  bubble.style.cssText = collapsed;
+  // Latch expanded on click so hover-collapse doesn't fight text selection.
+  let pinned = false;
+  bubble.onmouseenter = () => {
+    bubble.style.cssText = expanded;
+  };
+  bubble.onmouseleave = () => {
+    if (!pinned) bubble.style.cssText = collapsed;
+  };
+  bubble.onclick = () => {
+    pinned = true;
+    bubble.style.cssText = expanded;
+  };
+  bubble.ondblclick = () => bubble.remove();
+  bubble.title = "Click: pin open • Double-click: dismiss";
+  bubble.textContent = "🐞 " + JSON.stringify(debug, null, 2);
+  document.body.appendChild(bubble);
+}
+
 function updateControls() {
   // Show URL with CSS ellipsis, full URL as tooltip, clickable to open
   updateTitleDisplay();
@@ -4872,6 +4912,8 @@ app.ontoolresult = async (result: CallToolResult) => {
   viewUUID = result._meta?.viewUUID ? String(result._meta.viewUUID) : undefined;
   interactEnabled = result._meta?.interactEnabled === true;
   fileWritable = result._meta?.writable === true;
+  // TODO remove — debug: dump writability inputs so we can eyeball the mismatch
+  if (result._meta?._debug !== undefined) showDebugBubble(result._meta._debug);
 
   // Restore saved page or use initial page
   const savedPage = loadSavedPage();
@@ -5128,18 +5170,23 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
         renderAnnotationPanel();
         break;
       case "get_pages":
-        // Handle async — don't block the poll loop. But if it rejects,
-        // submit an empty payload so interact returns an error promptly
-        // instead of blocking 45s in waitForPageData.
-        handleGetPages(cmd).catch((err) => {
+        // Await so the next poll doesn't start until submit_page_data has
+        // been SENT. The host (Claude Desktop/Nest) serializes iframe→server
+        // tool calls — if we re-poll immediately, submit_page_data queues
+        // behind the 30s long-poll and interact times out. Awaiting costs a
+        // few seconds of poll gap, but interact is blocked in waitForPageData
+        // anyway so no commands are lost.
+        try {
+          await handleGetPages(cmd);
+        } catch (err) {
           log.error("get_pages failed — submitting empty result:", err);
-          app
+          await app
             .callServerTool({
               name: "submit_page_data",
               arguments: { requestId: cmd.requestId, pages: [] },
             })
             .catch(() => {});
-        });
+        }
         break;
       case "file_changed": {
         // Skip our own save_pdf echo: either save is still in flight, or the
@@ -5179,8 +5226,14 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
     }
   }
 
-  // Persist after processing batch
-  persistAnnotations();
+  // Persist after processing batch — but only if anything mutated.
+  // get_pages / file_changed are read-only; writing localStorage and
+  // recomputing the diff for them is wasted work.
+  if (
+    commands.some((c) => c.type !== "get_pages" && c.type !== "file_changed")
+  ) {
+    persistAnnotations();
+  }
 }
 
 let polling = false;

@@ -23,6 +23,7 @@ import {
   cliLocalFiles,
   DEFAULT_PDF,
   allowedLocalDirs,
+  writeFlags,
 } from "./server.js";
 
 /**
@@ -95,12 +96,14 @@ function parseArgs(): {
   stdio: boolean;
   useClientRoots: boolean;
   enableInteract: boolean;
+  debug: boolean;
 } {
   const args = process.argv.slice(2);
   const urls: string[] = [];
   let stdio = false;
   let useClientRoots = false;
   let enableInteract = false;
+  let debug = false;
 
   for (const arg of args) {
     if (arg === "--stdio") {
@@ -113,6 +116,12 @@ function parseArgs(): {
       // the command queue is in-memory per-process, so stateless
       // multi-instance deployments will drop commands.
       enableInteract = true;
+    } else if (arg === "--debug") {
+      debug = true;
+    } else if (arg === "--writeable-uploads-root") {
+      // Claude Desktop mounts attachments under a dir root named "uploads";
+      // by default we refuse to write there. This flag opts back in.
+      writeFlags.allowUploadsRoot = true;
     } else if (!arg.startsWith("-")) {
       // Convert local paths to file:// URLs, normalize arxiv URLs
       let url = arg;
@@ -134,11 +143,12 @@ function parseArgs(): {
     stdio,
     useClientRoots,
     enableInteract,
+    debug,
   };
 }
 
 async function main() {
-  const { urls, stdio, useClientRoots, enableInteract } = parseArgs();
+  const { urls, stdio, useClientRoots, enableInteract, debug } = parseArgs();
 
   // Register local files in whitelist
   for (const url of urls) {
@@ -165,7 +175,7 @@ async function main() {
   if (stdio) {
     // stdio → client is local (e.g. Claude Desktop), roots are safe
     await startStdioServer(() =>
-      createServer({ enableInteract: true, useClientRoots: true }),
+      createServer({ enableInteract: true, useClientRoots: true, debug }),
     );
   } else {
     // HTTP → client is remote, only honour roots with explicit opt-in
@@ -176,7 +186,7 @@ async function main() {
       );
     }
     await startStreamableHTTPServer(() =>
-      createServer({ useClientRoots, enableInteract }),
+      createServer({ useClientRoots, enableInteract, debug }),
     );
   }
 }
