@@ -541,10 +541,7 @@ function openSearch() {
   searchBarEl.style.display = "flex";
   updateSearchUI();
   searchInputEl.focus();
-  if (
-    panelState.open &&
-    annotationsPanelEl.classList.contains("floating")
-  ) {
+  if (panelState.open && annotationsPanelEl.classList.contains("floating")) {
     applyFloatingPanelPosition();
   }
   // Text extraction is handled by the background preloader
@@ -554,10 +551,7 @@ function closeSearch() {
   if (!searchOpen) return;
   searchOpen = false;
   searchBarEl.style.display = "none";
-  if (
-    panelState.open &&
-    annotationsPanelEl.classList.contains("floating")
-  ) {
+  if (panelState.open && annotationsPanelEl.classList.contains("floating")) {
     applyFloatingPanelPosition();
   }
   searchQuery = "";
