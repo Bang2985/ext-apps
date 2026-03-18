@@ -3407,10 +3407,27 @@ async function loadBaselineAnnotations(
           if (!annotationMap.has(def.id)) {
             annotationMap.set(def.id, { def, elements: [] });
           }
+        } else if (ann.annotationType !== 20) {
+          // Widget (type 20) is expected to be skipped; anything else we
+          // don't import will still be painted by page.render() onto the
+          // canvas as unselectable pixels. Log so we can diagnose
+          // "ghost annotations" (visible but not in panel, not clickable).
+          log.info(
+            `[WARN] Baseline: skipped PDF annotation on page ${pageNum}`,
+            `type=${ann.annotationType}`,
+            `subtype=${ann.subtype ?? "?"}`,
+            `name=${ann.name ?? "?"}`,
+            `rect=${ann.rect ? JSON.stringify(ann.rect) : "none"}`,
+          );
         }
       }
-    } catch {
-      // Skip pages that fail to load annotations
+    } catch (err) {
+      // Log the error — a thrown import for one annotation silently
+      // drops the REST of that page's annotations too.
+      log.info(
+        `[WARN] Baseline: page ${pageNum} annotation import failed:`,
+        err,
+      );
     }
   }
   log.info(
@@ -5375,6 +5392,62 @@ app.connect().then(() => {
   restoreAnnotations();
   updateAnnotationsBadge();
 });
+
+// Debug helper: dump all annotation state. Run in DevTools console as
+// `__pdfDebug()` to diagnose ghost annotations (visible on canvas but not
+// in panel / not selectable). Returns a copy-pasteable JSON object.
+(window as unknown as { __pdfDebug: () => unknown }).__pdfDebug = () => {
+  const out = {
+    annotationMap: [...annotationMap.entries()].map(([id, t]) => ({
+      id,
+      type: t.def.type,
+      page: t.def.page,
+      hasElements: t.elements.length,
+      // Trim imageData — can be megabytes of base64
+      def:
+        t.def.type === "image"
+          ? { ...t.def, imageData: t.def.imageData ? "<omitted>" : undefined }
+          : t.def,
+    })),
+    pdfBaselineAnnotations: pdfBaselineAnnotations.map((d) => ({
+      id: d.id,
+      type: d.type,
+      page: d.page,
+    })),
+    annotationLayerChildren: [...annotationLayerEl.children].map((el) => ({
+      tag: el.tagName,
+      class: el.className,
+    })),
+    formLayerChildren: [...formLayerEl.children].map((el) => ({
+      tag: el.tagName,
+      class: el.className,
+    })),
+    localStorageKey: annotationStorageKey(),
+    localStorageRaw: (() => {
+      const k = annotationStorageKey();
+      if (!k) return null;
+      const raw = localStorage.getItem(k);
+      if (!raw) return null;
+      // Parse and trim imageData
+      try {
+        const d = JSON.parse(raw);
+        if (Array.isArray(d.added)) {
+          d.added = d.added.map((a: { imageData?: string }) =>
+            a.imageData ? { ...a, imageData: "<omitted>" } : a,
+          );
+        }
+        return d;
+      } catch {
+        return { parseError: true, length: raw.length };
+      }
+    })(),
+    currentPage,
+    isDirty,
+    panelOpen: annotationPanelOpen,
+  };
+  console.log(JSON.stringify(out, null, 2));
+  return out;
+};
 
 // =============================================================================
 // Image from File (shared by drag-drop and paste)
