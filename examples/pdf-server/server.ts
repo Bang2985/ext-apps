@@ -1228,16 +1228,14 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
 Use this tool when the user wants to view or read a PDF. The renderer displays the document for viewing.
 
 Accepts local files (use list_pdfs), client MCP root directories, or any HTTPS URL.`
-        : `Show and render a PDF in an interactive viewer. Use this to display, annotate, edit, and fill form fields in PDF documents.
+        : `Open a PDF in an interactive viewer. Call this ONCE per PDF.
 
-Use this tool when the user wants to view, read, annotate, edit, sign, stamp, or fill out a PDF. The renderer displays the document with full annotation, signature/image placement, and form support.
+**All follow-up actions go through the \`interact\` tool** with the returned viewUUID — annotating, signing, stamping, filling forms, navigating, searching, extracting text/screenshots. Calling display_pdf again creates a second viewer and discards the existing one with all its state.
 
-**CRITICAL — DO NOT call display_pdf again on an already-displayed PDF.** Use the \`interact\` tool with the viewUUID from the result instead. Calling display_pdf again discards the existing viewer and all its state.
-
-Returns a viewUUID in structuredContent. Use it with \`interact\` for follow-up actions:
-- navigate, search, find, search_navigate, zoom
+Returns a viewUUID in structuredContent. Pass it to \`interact\`:
 - add_annotations, update_annotations, remove_annotations, highlight_text
 - fill_form (fill PDF form fields)
+- navigate, search, find, search_navigate, zoom
 - get_text, get_screenshot (extract content)
 
 Accepts local files (use list_pdfs), client MCP root directories, or any HTTPS URL.
@@ -1402,7 +1400,12 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           type: "text",
           text: disableInteract
             ? `Displaying PDF: ${normalized}`
-            : `Displaying PDF: ${normalized} (viewUUID: ${uuid})`,
+            : `PDF opened. viewUUID: ${uuid}
+
+→ To annotate, sign, stamp, fill forms, navigate, or extract: call \`interact\` with this viewUUID.
+→ DO NOT call display_pdf again — that creates a second viewer and loses all state.
+
+URL: ${normalized}`,
         },
       ];
 
