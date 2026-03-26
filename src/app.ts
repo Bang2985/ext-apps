@@ -12,11 +12,17 @@ import {
   CallToolResultSchema,
   EmptyResultSchema,
   Implementation,
+  ListResourcesRequest,
+  ListResourcesResult,
+  ListResourcesResultSchema,
   ListToolsRequest,
   ListToolsRequestSchema,
   ListToolsResult,
   LoggingMessageNotification,
   PingRequestSchema,
+  ReadResourceRequest,
+  ReadResourceResult,
+  ReadResourceResultSchema,
   Request,
   Result,
   Tool,
@@ -40,9 +46,12 @@ import {
   McpUiMessageResultSchema,
   McpUiOpenLinkRequest,
   McpUiOpenLinkResultSchema,
+  McpUiDownloadFileRequest,
+  McpUiDownloadFileResultSchema,
   McpUiResourceTeardownRequest,
   McpUiResourceTeardownRequestSchema,
   McpUiResourceTeardownResult,
+  McpUiRequestTeardownNotification,
   McpUiSizeChangedNotification,
   McpUiToolCancelledNotification,
   McpUiToolCancelledNotificationSchema,
@@ -80,12 +89,30 @@ export {
  * When hosts see a tool with this metadata, they fetch and render the
  * corresponding {@link App `App`}.
  *
- * **Note**: This constant is provided for reference. App developers typically
- * don't need to use it directly. Prefer using {@link server-helpers!registerAppTool `registerAppTool`}
- * with the `_meta.ui.resourceUri` format instead.
+ * **Note**: This constant is provided for reference and backwards compatibility.
+ * Server developers should use {@link server-helpers!registerAppTool `registerAppTool`}
+ * with the `_meta.ui.resourceUri` format instead. Host developers must check both
+ * formats for compatibility.
  *
- * @example How MCP servers use this key (server-side, not in Apps)
- * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_serverSide"
+ * @example Modern format (server-side, not in Apps)
+ * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_modernFormat"
+ * // Preferred: Use registerAppTool with nested ui.resourceUri
+ * registerAppTool(
+ *   server,
+ *   "weather",
+ *   {
+ *     description: "Get weather forecast",
+ *     _meta: {
+ *       ui: { resourceUri: "ui://weather/forecast" },
+ *     },
+ *   },
+ *   handler,
+ * );
+ * ```
+ *
+ * @example Legacy format (deprecated, for backwards compatibility)
+ * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_legacyFormat"
+ * // Deprecated: Direct use of RESOURCE_URI_META_KEY
  * server.registerTool(
  *   "weather",
  *   {
@@ -98,10 +125,13 @@ export {
  * );
  * ```
  *
- * @example How hosts check for this metadata (host-side)
+ * @example How hosts check for this metadata (must support both formats)
  * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_hostSide"
- * // Check tool definition metadata (from tools/list response):
- * const uiUri = tool._meta?.[RESOURCE_URI_META_KEY];
+ * // Hosts should check both modern and legacy formats
+ * const meta = tool._meta;
+ * const uiMeta = meta?.ui as McpUiToolMeta | undefined;
+ * const legacyUri = meta?.[RESOURCE_URI_META_KEY] as string | undefined;
+ * const uiUri = uiMeta?.resourceUri ?? legacyUri;
  * if (typeof uiUri === "string" && uiUri.startsWith("ui://")) {
  *   // Fetch the resource and display the UI
  * }
@@ -161,7 +191,7 @@ type RequestHandlerExtra = Parameters<
  * 1. **Create**: Instantiate App with info and capabilities
  * 2. **Connect**: Call `connect()` to establish transport and perform handshake
  * 3. **Interactive**: Send requests, receive notifications, call tools
- * 4. **Cleanup**: Host sends teardown request before unmounting
+ * 4. **Teardown**: Host sends teardown request before unmounting
  *
  * ## Inherited Methods
  *
@@ -897,9 +927,113 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
     params: CallToolRequest["params"],
     options?: RequestOptions,
   ): Promise<CallToolResult> {
+    if (typeof params === "string") {
+      throw new Error(
+        `callServerTool() expects an object as its first argument, but received a string ("${params}"). ` +
+          `Did you mean: callServerTool({ name: "${params}", arguments: { ... } })?`,
+      );
+    }
     return await this.request(
       { method: "tools/call", params },
       CallToolResultSchema,
+      options,
+    );
+  }
+
+  /**
+   * Read a resource from the originating MCP server (proxied through the host).
+   *
+   * Apps can read resources to access files, data, or other content provided by
+   * the MCP server. Resources are identified by URI (e.g., `file:///path/to/file`
+   * or custom schemes like `videos://bunny-1mb`). The host proxies the request to
+   * the actual MCP server and returns the resource content.
+   *
+   * @param params - Resource URI to read
+   * @param options - Request options (timeout, etc.)
+   * @returns Resource content with URI, name, description, mimeType, and contents array
+   *
+   * @throws {Error} If the resource does not exist on the server
+   * @throws {Error} If the request times out or the connection is lost
+   * @throws {Error} If the host rejects the request
+   *
+   * @example Read a video resource and play it
+   * ```ts source="./app.examples.ts#App_readServerResource_playVideo"
+   * try {
+   *   const result = await app.readServerResource({
+   *     uri: "videos://bunny-1mb",
+   *   });
+   *   const content = result.contents[0];
+   *   if (content && "blob" in content) {
+   *     const binary = Uint8Array.from(atob(content.blob), (c) =>
+   *       c.charCodeAt(0),
+   *     );
+   *     const url = URL.createObjectURL(
+   *       new Blob([binary], { type: content.mimeType || "video/mp4" }),
+   *     );
+   *     videoElement.src = url;
+   *     videoElement.play();
+   *   }
+   * } catch (error) {
+   *   console.error("Failed to read resource:", error);
+   * }
+   * ```
+   *
+   * @see {@link listServerResources `listServerResources`} to discover available resources
+   */
+  async readServerResource(
+    params: ReadResourceRequest["params"],
+    options?: RequestOptions,
+  ): Promise<ReadResourceResult> {
+    return await this.request(
+      { method: "resources/read", params },
+      ReadResourceResultSchema,
+      options,
+    );
+  }
+
+  /**
+   * List available resources from the originating MCP server (proxied through the host).
+   *
+   * Apps can list resources to discover what content is available on the MCP server.
+   * This enables dynamic resource discovery and building resource browsers or pickers.
+   * The host proxies the request to the actual MCP server and returns the resource list.
+   *
+   * Results may be paginated using the `cursor` parameter for servers with many resources.
+   *
+   * @param params - Optional parameters (omit for all resources, or `{ cursor }` for pagination)
+   * @param options - Request options (timeout, etc.)
+   * @returns List of resources with their URIs, names, descriptions, mimeTypes, and optional pagination cursor
+   *
+   * @throws {Error} If the request times out or the connection is lost
+   * @throws {Error} If the host rejects the request
+   *
+   * @example Discover available videos and build a picker UI
+   * ```ts source="./app.examples.ts#App_listServerResources_buildPicker"
+   * try {
+   *   const result = await app.listServerResources();
+   *   const videoResources = result.resources.filter((r) =>
+   *     r.mimeType?.startsWith("video/"),
+   *   );
+   *   videoResources.forEach((resource) => {
+   *     const option = document.createElement("option");
+   *     option.value = resource.uri;
+   *     option.textContent = resource.description || resource.name;
+   *     selectElement.appendChild(option);
+   *   });
+   * } catch (error) {
+   *   console.error("Failed to list resources:", error);
+   * }
+   * ```
+   *
+   * @see {@link readServerResource `readServerResource`} to read a specific resource
+   */
+  async listServerResources(
+    params?: ListResourcesRequest["params"],
+    options?: RequestOptions,
+  ): Promise<ListResourcesResult> {
+    return await this.request(
+      { method: "resources/list", params },
+      ListResourcesResultSchema,
       options,
     );
   }
@@ -1098,6 +1232,127 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
   sendOpenLink: App["openLink"] = this.openLink;
 
   /**
+   * Request the host to download a file.
+   *
+   * Since MCP Apps run in sandboxed iframes where direct downloads are blocked,
+   * this provides a host-mediated mechanism for file exports. The host will
+   * typically show a confirmation dialog before initiating the download.
+   *
+   * Uses standard MCP resource types: `EmbeddedResource` for inline content
+   * and `ResourceLink` for content the host can fetch directly.
+   *
+   * @param params - Resource contents to download
+   * @param options - Request options (timeout, etc.)
+   * @returns Result with `isError: true` if the host denied the request (e.g., user cancelled)
+   *
+   * @throws {Error} If the request times out or the connection is lost
+   *
+   * @example Download a JSON file (embedded text resource)
+   * ```ts
+   * const data = JSON.stringify({ items: selectedItems }, null, 2);
+   * const { isError } = await app.downloadFile({
+   *   contents: [{
+   *     type: "resource",
+   *     resource: {
+   *       uri: "file:///export.json",
+   *       mimeType: "application/json",
+   *       text: data,
+   *     },
+   *   }],
+   * });
+   * if (isError) {
+   *   console.warn("Download denied or cancelled");
+   * }
+   * ```
+   *
+   * @example Download binary content (embedded blob resource)
+   * ```ts
+   * const { isError } = await app.downloadFile({
+   *   contents: [{
+   *     type: "resource",
+   *     resource: {
+   *       uri: "file:///image.png",
+   *       mimeType: "image/png",
+   *       blob: base64EncodedPng,
+   *     },
+   *   }],
+   * });
+   * ```
+   *
+   * @example Download via resource link (host fetches)
+   * ```ts
+   * const { isError } = await app.downloadFile({
+   *   contents: [{
+   *     type: "resource_link",
+   *     uri: "https://api.example.com/reports/q4.pdf",
+   *     name: "Q4 Report",
+   *     mimeType: "application/pdf",
+   *   }],
+   * });
+   * ```
+   *
+   * @see {@link McpUiDownloadFileRequest `McpUiDownloadFileRequest`} for request structure
+   * @see {@link McpUiDownloadFileResult `McpUiDownloadFileResult`} for result structure
+   */
+  downloadFile(
+    params: McpUiDownloadFileRequest["params"],
+    options?: RequestOptions,
+  ) {
+    return this.request(
+      <McpUiDownloadFileRequest>{
+        method: "ui/download-file",
+        params,
+      },
+      McpUiDownloadFileResultSchema,
+      options,
+    );
+  }
+
+  /**
+   * Request the host to tear down this app.
+   *
+   * Apps call this method to request that the host tear them down. The host
+   * decides whether to proceed - if approved, the host will send
+   * `ui/resource-teardown` to allow the app to perform gracefull termination before being
+   * unmounted. This piggybacks on the existing teardown mechanism, ensuring
+   * the app only needs a single shutdown procedure (via {@link onteardown `onteardown`})
+   * regardless of whether the teardown was initiated by the app or the host.
+   *
+   * This is a fire-and-forget notification - no response is expected.
+   * If the host approves, the app will receive a `ui/resource-teardown`
+   * request via the {@link onteardown `onteardown`} handler to persist unsaved state.
+   *
+   * @param params - Empty params object (reserved for future use)
+   * @returns Promise that resolves when the notification is sent
+   *
+   * @example App-initiated teardown after user action
+   * ```typescript
+   * // User clicks "Done" button in the app
+   * async function handleDoneClick() {
+   *   // Request the host to tear down the app
+   *   await app.requestTeardown();
+   *   // If host approves, onteardown handler will be called for termination
+   * }
+   *
+   * // Set up teardown handler (called for both app-initiated and host-initiated teardown)
+   * app.onteardown = async () => {
+   *   await saveState();
+   *   closeConnections();
+   *   return {};
+   * };
+   * ```
+   *
+   * @see {@link McpUiRequestTeardownNotification `McpUiRequestTeardownNotification`} for notification structure
+   * @see {@link onteardown `onteardown`} for the graceful termination handler
+   */
+  requestTeardown(params: McpUiRequestTeardownNotification["params"] = {}) {
+    return this.notification(<McpUiRequestTeardownNotification>{
+      method: "ui/notifications/request-teardown",
+      params,
+    });
+  }
+
+  /**
    * Request a change to the display mode.
    *
    * Requests the host to change the UI container to the specified display mode
@@ -1205,25 +1460,31 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
       scheduled = true;
       requestAnimationFrame(() => {
         scheduled = false;
+
+        // Hosts determine the container size in fullscreen, so size-changed
+        // notifications are not needed.
+        if (this._hostContext?.displayMode === "fullscreen") {
+          return;
+        }
+
         const html = document.documentElement;
 
-        // Measure actual content size by temporarily setting html to fit-content.
-        // This shrinks html to fit body (including body margins), giving us the
-        // true minimum size needed by the content.
-        const originalWidth = html.style.width;
+        // Measure actual content height by temporarily overriding html sizing.
+        // Height uses max-content because fit-content would clamp to the viewport
+        // height when content is taller than the iframe, causing internal scrolling.
+        //
+        // Width uses window.innerWidth instead of measuring via fit-content.
+        // Setting html.style.width to fit-content forces a synchronous reflow at
+        // 0px width for responsive apps (whose content derives width from the
+        // container rather than having intrinsic width). This causes the browser
+        // to clamp scrollLeft on any horizontal scroll containers to 0, permanently
+        // destroying their scroll positions.
         const originalHeight = html.style.height;
-        html.style.width = "fit-content";
-        html.style.height = "fit-content";
-        const rect = html.getBoundingClientRect();
-        html.style.width = originalWidth;
+        html.style.height = "max-content";
+        const height = Math.ceil(html.getBoundingClientRect().height);
         html.style.height = originalHeight;
 
-        // Compensate for scrollbar width on Linux/Windows where scrollbars consume space.
-        // On systems with overlay scrollbars (macOS), this will be 0.
-        const scrollbarWidth = window.innerWidth - html.clientWidth;
-
-        const width = Math.ceil(rect.width + scrollbarWidth);
-        const height = Math.ceil(rect.height);
+        const width = Math.ceil(window.innerWidth);
 
         // Only send if size actually changed (prevents feedback loops from style changes)
         if (width !== lastWidth || height !== lastHeight) {
@@ -1285,6 +1546,11 @@ export class App extends Protocol<AppRequest, AppNotification, AppResult> {
     ),
     options?: RequestOptions,
   ): Promise<void> {
+    if (this.transport) {
+      throw new Error(
+        "App is already connected. Call close() before connecting again.",
+      );
+    }
     await super.connect(transport);
 
     try {

@@ -112,6 +112,18 @@ const graph = new ForceGraph<NodeData, LinkData>(container)
   })
   .graphData(graphData);
 
+// Prevent touch events from propagating to the parent scroll view.
+// force-graph uses pointer events, which don't suppress native scroll gesture
+// recognition on touch devices.
+const graphCanvas = container.querySelector("canvas");
+if (graphCanvas) {
+  for (const eventName of ["touchstart", "touchmove"] as const) {
+    graphCanvas.addEventListener(eventName, (e) => e.preventDefault(), {
+      passive: false,
+    });
+  }
+}
+
 // Handle window resize
 function handleResize() {
   const { width, height } = container.getBoundingClientRect();
@@ -584,9 +596,7 @@ app.registerTool(
     description:
       "Expand a node to fetch and display all Wikipedia pages it links to. This is the core way to explore the graph.",
     inputSchema: z.object({
-      identifier: z
-        .string()
-        .describe("The title or URL of the node to expand"),
+      identifier: z.string().describe("The title or URL of the node to expand"),
     }),
   },
   async (args) => {

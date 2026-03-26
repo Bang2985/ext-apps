@@ -260,6 +260,17 @@ The resource content is returned via `resources/read`:
 }
 ```
 
+#### Metadata Location
+
+`UIResourceMeta` (CSP, permissions, domain, prefersBorder) may be provided on either or both:
+
+- **`resources/list`:** On the resource entry's `_meta.ui` field. Useful as a static default that hosts can review at connection time.
+- **`resources/read`:** On each content item's `_meta.ui` field. Useful for per-response overrides or dynamic metadata that is only known at read time.
+
+When `_meta.ui` is present on **both**, the content-item value takes precedence. Hosts MUST check both locations, preferring the content item and falling back to the listing entry.
+
+> **Server guidance:** Prefer placing `_meta.ui` on the content item in `resources/read`, especially when metadata is dynamic or varies per-response. Use the listing-level `_meta.ui` (via `registerAppResource` config) when metadata is static and you want hosts to be able to review security configuration at connection time without fetching the resource.
+
 #### Content Requirements:
 
 - URI MUST start with `ui://` scheme
@@ -287,15 +298,24 @@ The resource content is returned via `resources/read`:
 Example:
 
 ```json
-// Resource declaration
+// Resource declaration (resources/list) — static defaults for host review
 {
   "uri": "ui://weather-server/dashboard-template",
   "name": "weather_dashboard",
   "description": "Interactive weather dashboard view",
-  "mimeType": "text/html;profile=mcp-app"
+  "mimeType": "text/html;profile=mcp-app",
+  "_meta": {
+    "ui": {
+      "csp": {
+        "connectDomains": ["https://api.openweathermap.org"],
+        "resourceDomains": ["https://cdn.jsdelivr.net"]
+      },
+      "prefersBorder": true
+    }
+  }
 }
 
-// Resource content with metadata
+// Resource content (resources/read) — takes precedence when present
 {
   "contents": [{
     "uri": "ui://weather-server/dashboard-template",
@@ -471,8 +491,8 @@ If the Host is a web page, it MUST wrap the View and communicate with it through
 
 1. The Host and the Sandbox MUST have different origins.
 2. The Sandbox MUST have the following permissions: `allow-scripts`, `allow-same-origin`.
-3. The Sandbox MUST send a `ui/notifications/sandbox-proxy-ready` notification to the host when it's ready to process an `ui/notifications/sandbox-resource-ready` notification.
-4. Once the Sandbox is ready, the Host MUST send the raw HTML resource to load in a `ui/notifications/sandbox-resource-ready` notification.
+3. The Sandbox SHOULD send a `ui/notifications/sandbox-proxy-ready` notification to the host when it's ready to process an `ui/notifications/sandbox-resource-ready` notification.
+4. Once the Sandbox is ready, the Host SHOULD send the raw HTML resource to load in a `ui/notifications/sandbox-resource-ready` notification.
 5. The Sandbox MUST load the raw HTML of the View with CSP settings that:
    - Enforce the domains declared in `ui.csp` metadata
    - If `frameDomains` is provided, allow nested iframes from declared origins; otherwise use `frame-src 'none'`
@@ -640,6 +660,8 @@ interface HostCapabilities {
   experimental?: {};
   /** Host supports opening external URLs. */
   openLinks?: {};
+  /** Host supports file downloads via ui/download-file. */
+  downloadFile?: {};
   /** Host can proxy tool calls to the MCP server. */
   serverTools?: {
     /** Host supports tools/list_changed notifications. */
@@ -1005,6 +1027,73 @@ MCP Apps introduces additional JSON-RPC methods for UI-specific functionality:
 
 Host SHOULD open the URL in the user's default browser or a new tab.
 
+`ui/download-file` - Request host to download a file
+
+```typescript
+// Request (EmbeddedResource — inline content)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "ui/download-file",
+  params: {
+    contents: [
+      {
+        type: "resource",
+        resource: {
+          uri: "file:///export.json",       // Used for suggested filename
+          mimeType: "application/json",
+          text: "{ ... }"                   // Text content (or `blob` for base64 binary)
+        }
+      }
+    ]
+  }
+}
+
+// Request (ResourceLink — host fetches)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  method: "ui/download-file",
+  params: {
+    contents: [
+      {
+        type: "resource_link",
+        uri: "https://api.example.com/reports/q4.pdf",
+        name: "Q4 Report",
+        mimeType: "application/pdf"
+      }
+    ]
+  }
+}
+
+// Success Response
+{
+  jsonrpc: "2.0",
+  id: 1,
+  result: {}  // Empty result on success
+}
+
+// Error Response (if denied or failed)
+{
+  jsonrpc: "2.0",
+  id: 1,
+  error: {
+    code: -32000,  // Implementation-defined error
+    message: "Download denied by user" | "Invalid content" | "Policy violation"
+  }
+}
+```
+
+MCP Apps run in sandboxed iframes where direct file downloads are blocked (`allow-downloads` is not set). `ui/download-file` provides a host-mediated mechanism for apps to offer file exports — useful for visualization tools (SVG/PNG export), document editors, data analysis tools, and any app that produces downloadable artifacts.
+
+The `contents` array uses standard MCP resource types (`EmbeddedResource` and `ResourceLink`), avoiding custom content formats. For `EmbeddedResource`, content is inline via `text` (UTF-8) or `blob` (base64). For `ResourceLink`, the host can retrieve the content directly from the URI.
+
+Host behavior:
+* Host SHOULD show a confirmation dialog before initiating the download.
+* For `EmbeddedResource`, host SHOULD derive the filename from the last segment of `resource.uri`.
+* Host MAY reject the download based on security policy, file size limits, or user preferences.
+* Host SHOULD sanitize filenames to prevent path traversal.
+
 `ui/message` - Send message content to the host's chat interface
 
 ```typescript
@@ -1294,8 +1383,10 @@ Host MUST send this notification if the tool execution was cancelled, for any re
 }
 ```
 
-Host MUST send this notification before tearing down the UI resource, for any reason, including user action, resource re-allocation, etc. The Host MAY specify the reason.
+Host MUST send this notification before tearing down the UI resource, for any reason, including user action, view-initiated teardown, resource re-allocation, etc. The Host MAY specify the reason.
 Host SHOULD wait for a response before tearing down the resource (to prevent data loss).
+
+#### Notifications (View → Host)
 
 `ui/notifications/size-changed` - View's size changed
 
@@ -1311,6 +1402,22 @@ Host SHOULD wait for a response before tearing down the resource (to prevent dat
 ```
 
 The View SHOULD send this notification when rendered content body size changes (e.g. using ResizeObserver API to report up to date size).
+
+`ui/notifications/request-teardown` - View requests host to tear it down
+
+```typescript
+{
+  jsonrpc: "2.0",
+  method: "ui/notifications/request-teardown",
+  params: {}
+}
+```
+
+The View MAY send this notification to request that the host tear it down. This enables View-initiated teardown flows (e.g., user clicks a "Done" button in the View).
+
+**Host behavior:**
+- Host MAY defer or ignore the teardown request.
+- If the Host accepts the request, it MUST follow the graceful termination process by sending `ui/resource-teardown` to the View. The Host SHOULD wait for a response before tearing down the resource (to prevent data loss).
 
 `ui/notifications/host-context-changed` - Host context has changed
 
@@ -1464,19 +1571,24 @@ sequenceDiagram
   end
 ```
 
-#### 4. Cleanup
+#### 4. Teardown
+
+The Host can tear down Views. Views may request teardown by sending `ui/notifications/request-teardown` to the Host. In any case, the Host MUST send `ui/resource-teardown` to allow the View to terminate gracefully.
 
 ```mermaid
 sequenceDiagram
   participant H as Host
   participant UI as View (iframe)
+  opt View-initiated teardown
+    UI ->> H: ui/notifications/request-teardown
+  end
   H ->> UI: ui/resource-teardown
   UI --> UI: Graceful termination
   UI -->> H: ui/resource-teardown response
   H -x H: Tear down iframe and listeners
 ```
 
-Note: Cleanup may be triggered at any point in the lifecycle following View initialization.
+Note: Teardown may be triggered at any point in the lifecycle following View initialization.
 
 #### Key Differences from Pre-SEP MCP-UI:
 
@@ -2380,8 +2492,10 @@ Hosts MUST enforce Content Security Policies based on resource metadata.
 **CSP Construction from Metadata:**
 
 ```typescript
-const csp = resource._meta?.ui?.csp; // `resource` is extracted from the `contents` of the `resources/read` result
-const permissions = resource._meta?.ui?.permissions;
+// Prefer content-level _meta.ui (resources/read), fall back to listing-level (resources/list)
+const uiMeta = resource._meta?.ui ?? listingResource._meta?.ui;
+const csp = uiMeta?.csp;
+const permissions = uiMeta?.permissions;
 
 const cspValue = `
   default-src 'none';

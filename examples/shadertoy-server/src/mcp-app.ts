@@ -40,7 +40,8 @@ const log = {
 // Get element references
 const mainEl = document.querySelector(".main") as HTMLElement;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-const codePreview = document.getElementById("code-preview") as HTMLPreElement;
+// TODO: code-preview streaming toggle was removed when ontoolinputpartial was
+// dropped during app-tool refactor — element still exists in HTML, restore if needed
 const fullscreenBtn = document.getElementById(
   "fullscreen-btn",
 ) as HTMLButtonElement;
