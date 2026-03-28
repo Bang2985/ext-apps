@@ -23,8 +23,6 @@ import {
   ReadResourceRequest,
   ReadResourceResult,
   ReadResourceResultSchema,
-  Request,
-  Result,
   Tool,
   ToolAnnotations,
   ToolListChangedNotification,
@@ -387,7 +385,6 @@ export class App extends ProtocolWithEvents<
               `Invalid output for tool ${name}: ${parseResult.error}`,
             );
           }
-          return parseResult.data;
         }
         return result;
       }) as any,
@@ -433,6 +430,7 @@ export class App extends ProtocolWithEvents<
         .map(([name, tool]) => {
           const result: Tool = {
             name,
+            title: tool.title,
             description: tool.description,
             inputSchema: (tool.inputSchema
               ? z.toJSONSchema(tool.inputSchema as ZodSchema)
@@ -440,13 +438,12 @@ export class App extends ProtocolWithEvents<
                   type: "object" as const,
                   properties: {},
                 }) as Tool["inputSchema"],
-            outputSchema: (tool.outputSchema
-              ? z.toJSONSchema(tool.outputSchema as ZodSchema)
-              : {
-                  type: "object" as const,
-                  properties: {},
-                }) as Tool["outputSchema"],
           };
+          if (tool.outputSchema) {
+            result.outputSchema = z.toJSONSchema(
+              tool.outputSchema as ZodSchema,
+            ) as Tool["outputSchema"];
+          }
           if (tool.annotations) {
             result.annotations = tool.annotations;
           }
