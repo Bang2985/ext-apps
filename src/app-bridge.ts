@@ -475,10 +475,17 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiSizeChangedNotification `McpUiSizeChangedNotification`} for the notification type
    * @see {@link app!App.sendSizeChanged `App.sendSizeChanged`} - the View method that sends these notifications
    */
+  get onsizechange():
+    | ((params: McpUiSizeChangedNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("sizechange");
+  }
   set onsizechange(
-    callback: (params: McpUiSizeChangedNotification["params"]) => void,
+    callback:
+      | ((params: McpUiSizeChangedNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("sizechange", callback);
+    this.setEventHandler("sizechange", callback);
   }
 
   /**
@@ -511,10 +518,17 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiSandboxProxyReadyNotification `McpUiSandboxProxyReadyNotification`} for the notification type
    * @see {@link sendSandboxResourceReady `sendSandboxResourceReady`} for sending content to the sandbox
    */
+  get onsandboxready():
+    | ((params: McpUiSandboxProxyReadyNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("sandboxready");
+  }
   set onsandboxready(
-    callback: (params: McpUiSandboxProxyReadyNotification["params"]) => void,
+    callback:
+      | ((params: McpUiSandboxProxyReadyNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("sandboxready", callback);
+    this.setEventHandler("sandboxready", callback);
   }
 
   /**
@@ -534,10 +548,17 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiInitializedNotification `McpUiInitializedNotification`} for the notification type
    * @see {@link sendToolInput `sendToolInput`} for sending tool arguments to the View
    */
+  get oninitialized():
+    | ((params: McpUiInitializedNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("initialized");
+  }
   set oninitialized(
-    callback: (params: McpUiInitializedNotification["params"]) => void,
+    callback:
+      | ((params: McpUiInitializedNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("initialized", callback);
+    this.setEventHandler("initialized", callback);
   }
 
   /**
@@ -574,18 +595,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiMessageRequest `McpUiMessageRequest`} for the request type
    * @see {@link McpUiMessageResult `McpUiMessageResult`} for the result type
    */
+  private _onmessage?: (
+    params: McpUiMessageRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<McpUiMessageResult>;
+
+  get onmessage() {
+    return this._onmessage;
+  }
   set onmessage(
-    callback: (
-      params: McpUiMessageRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<McpUiMessageResult>,
+    callback:
+      | ((
+          params: McpUiMessageRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<McpUiMessageResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiMessageRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onmessage = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiMessageRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -631,18 +665,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiOpenLinkRequest `McpUiOpenLinkRequest`} for the request type
    * @see {@link McpUiOpenLinkResult `McpUiOpenLinkResult`} for the result type
    */
+  private _onopenlink?: (
+    params: McpUiOpenLinkRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<McpUiOpenLinkResult>;
+
+  get onopenlink() {
+    return this._onopenlink;
+  }
   set onopenlink(
-    callback: (
-      params: McpUiOpenLinkRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<McpUiOpenLinkResult>,
+    callback:
+      | ((
+          params: McpUiOpenLinkRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<McpUiOpenLinkResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiOpenLinkRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onopenlink = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiOpenLinkRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -687,18 +734,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiDownloadFileRequest `McpUiDownloadFileRequest`} for the request type
    * @see {@link McpUiDownloadFileResult `McpUiDownloadFileResult`} for the result type
    */
+  private _ondownloadfile?: (
+    params: McpUiDownloadFileRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<McpUiDownloadFileResult>;
+
+  get ondownloadfile() {
+    return this._ondownloadfile;
+  }
   set ondownloadfile(
-    callback: (
-      params: McpUiDownloadFileRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<McpUiDownloadFileResult>,
+    callback:
+      | ((
+          params: McpUiDownloadFileRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<McpUiDownloadFileResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiDownloadFileRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._ondownloadfile = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiDownloadFileRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -727,10 +787,17 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiRequestTeardownNotification `McpUiRequestTeardownNotification`} for the notification type
    * @see {@link teardownResource `teardownResource`} for initiating teardown
    */
+  get onrequestteardown():
+    | ((params: McpUiRequestTeardownNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("requestteardown");
+  }
   set onrequestteardown(
-    callback: (params: McpUiRequestTeardownNotification["params"]) => void,
+    callback:
+      | ((params: McpUiRequestTeardownNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("requestteardown", callback);
+    this.setEventHandler("requestteardown", callback);
   }
 
   /**
@@ -765,18 +832,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see {@link McpUiRequestDisplayModeRequest `McpUiRequestDisplayModeRequest`} for the request type
    * @see {@link McpUiRequestDisplayModeResult `McpUiRequestDisplayModeResult`} for the result type
    */
+  private _onrequestdisplaymode?: (
+    params: McpUiRequestDisplayModeRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<McpUiRequestDisplayModeResult>;
+
+  get onrequestdisplaymode() {
+    return this._onrequestdisplaymode;
+  }
   set onrequestdisplaymode(
-    callback: (
-      params: McpUiRequestDisplayModeRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<McpUiRequestDisplayModeResult>,
+    callback:
+      | ((
+          params: McpUiRequestDisplayModeRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<McpUiRequestDisplayModeResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiRequestDisplayModeRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onrequestdisplaymode = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiRequestDisplayModeRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -805,10 +885,17 @@ export class AppBridge extends ProtocolWithEvents<
    * };
    * ```
    */
+  get onloggingmessage():
+    | ((params: LoggingMessageNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("loggingmessage");
+  }
   set onloggingmessage(
-    callback: (params: LoggingMessageNotification["params"]) => void,
+    callback:
+      | ((params: LoggingMessageNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("loggingmessage", callback);
+    this.setEventHandler("loggingmessage", callback);
   }
 
   /**
@@ -837,18 +924,31 @@ export class AppBridge extends ProtocolWithEvents<
    *
    * @see {@link McpUiUpdateModelContextRequest `McpUiUpdateModelContextRequest`} for the request type
    */
+  private _onupdatemodelcontext?: (
+    params: McpUiUpdateModelContextRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<EmptyResult>;
+
+  get onupdatemodelcontext() {
+    return this._onupdatemodelcontext;
+  }
   set onupdatemodelcontext(
-    callback: (
-      params: McpUiUpdateModelContextRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<EmptyResult>,
+    callback:
+      | ((
+          params: McpUiUpdateModelContextRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<EmptyResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiUpdateModelContextRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onupdatemodelcontext = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiUpdateModelContextRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -877,15 +977,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see `CallToolRequest` from @modelcontextprotocol/sdk for the request type
    * @see `CallToolResult` from @modelcontextprotocol/sdk for the result type
    */
+  private _oncalltool?: (
+    params: CallToolRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<CallToolResult>;
+
+  get oncalltool() {
+    return this._oncalltool;
+  }
   set oncalltool(
-    callback: (
-      params: CallToolRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<CallToolResult>,
+    callback:
+      | ((
+          params: CallToolRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<CallToolResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-      return callback(request.params, extra);
-    });
+    this._oncalltool = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        CallToolRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -940,18 +1056,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see `ListResourcesRequest` from @modelcontextprotocol/sdk for the request type
    * @see `ListResourcesResult` from @modelcontextprotocol/sdk for the result type
    */
+  private _onlistresources?: (
+    params: ListResourcesRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<ListResourcesResult>;
+
+  get onlistresources() {
+    return this._onlistresources;
+  }
   set onlistresources(
-    callback: (
-      params: ListResourcesRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<ListResourcesResult>,
+    callback:
+      | ((
+          params: ListResourcesRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<ListResourcesResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      ListResourcesRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onlistresources = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        ListResourcesRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -980,18 +1109,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see `ListResourceTemplatesRequest` from @modelcontextprotocol/sdk for the request type
    * @see `ListResourceTemplatesResult` from @modelcontextprotocol/sdk for the result type
    */
+  private _onlistresourcetemplates?: (
+    params: ListResourceTemplatesRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<ListResourceTemplatesResult>;
+
+  get onlistresourcetemplates() {
+    return this._onlistresourcetemplates;
+  }
   set onlistresourcetemplates(
-    callback: (
-      params: ListResourceTemplatesRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<ListResourceTemplatesResult>,
+    callback:
+      | ((
+          params: ListResourceTemplatesRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<ListResourceTemplatesResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      ListResourceTemplatesRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onlistresourcetemplates = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        ListResourceTemplatesRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -1020,18 +1162,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see `ReadResourceRequest` from @modelcontextprotocol/sdk for the request type
    * @see `ReadResourceResult` from @modelcontextprotocol/sdk for the result type
    */
+  private _onreadresource?: (
+    params: ReadResourceRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<ReadResourceResult>;
+
+  get onreadresource() {
+    return this._onreadresource;
+  }
   set onreadresource(
-    callback: (
-      params: ReadResourceRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<ReadResourceResult>,
+    callback:
+      | ((
+          params: ReadResourceRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<ReadResourceResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      ReadResourceRequestSchema,
-      async (request, extra) => {
-        return callback(request.params, extra);
-      },
-    );
+    this._onreadresource = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        ReadResourceRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**
@@ -1088,15 +1243,31 @@ export class AppBridge extends ProtocolWithEvents<
    * @see `ListPromptsRequest` from @modelcontextprotocol/sdk for the request type
    * @see `ListPromptsResult` from @modelcontextprotocol/sdk for the result type
    */
+  private _onlistprompts?: (
+    params: ListPromptsRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<ListPromptsResult>;
+
+  get onlistprompts() {
+    return this._onlistprompts;
+  }
   set onlistprompts(
-    callback: (
-      params: ListPromptsRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<ListPromptsResult>,
+    callback:
+      | ((
+          params: ListPromptsRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<ListPromptsResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(ListPromptsRequestSchema, async (request, extra) => {
-      return callback(request.params, extra);
-    });
+    this._onlistprompts = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        ListPromptsRequestSchema,
+        async (request, extra) => {
+          return callback(request.params, extra);
+        },
+      );
+    }
   }
 
   /**

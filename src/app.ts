@@ -231,8 +231,8 @@ export type AppEventMap = {
  * - `ontoolcancelled` - Tool execution was cancelled by user or host
  * - `onhostcontextchanged` - Host context changes (theme, locale, etc.)
  *
- * These delegate to {@link addEventListener `addEventListener`}, so assigning
- * multiple times appends listeners rather than replacing them.
+ * These follow DOM conventions: assigning replaces the previous handler
+ * (like `el.onclick`), and coexists with {@link addEventListener `addEventListener`}.
  *
  * @example Basic usage with PostMessageTransport
  * ```ts source="./app.examples.ts#App_basicUsage"
@@ -307,8 +307,8 @@ export class App extends ProtocolWithEvents<
 
     // Eagerly register the hostcontextchanged dispatcher so that
     // onEventDispatch merges incoming context into _hostContext even if the
-    // user never adds a listener.
-    this.addEventListener("hostcontextchanged", () => {});
+    // user never sets onhostcontextchanged or adds a listener.
+    this.setEventHandler("hostcontextchanged", undefined);
   }
 
   private registerCapabilities(capabilities: McpUiAppCapabilities): void {
@@ -553,13 +553,13 @@ export class App extends ProtocolWithEvents<
    * sends a tool's complete arguments. This is sent after a tool call begins
    * and before the tool result is available.
    *
-   * This setter is a convenience wrapper around
-   * {@link addEventListener `addEventListener`} — assigning multiple times
-   * appends listeners rather than replacing them.
+   * This setter has DOM-style replace semantics (like `el.onclick`).
+   * Assigning replaces the previous handler; assigning `undefined` clears
+   * it. {@link addEventListener `addEventListener`} listeners are unaffected.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with the tool input params ({@link McpUiToolInputNotification.params `McpUiToolInputNotification.params`})
+   * @param callback - Function called with the tool input params ({@link McpUiToolInputNotification.params `McpUiToolInputNotification.params`}), or `undefined` to clear
    *
    * @example
    * ```ts source="./app.examples.ts#App_ontoolinput_setter"
@@ -571,13 +571,20 @@ export class App extends ProtocolWithEvents<
    * await app.connect();
    * ```
    *
-   * @see {@link addEventListener `addEventListener`} for the underlying method
+   * @see {@link addEventListener `addEventListener`} for multi-listener support
    * @see {@link McpUiToolInputNotification `McpUiToolInputNotification`} for the notification structure
    */
+  get ontoolinput():
+    | ((params: McpUiToolInputNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("toolinput");
+  }
   set ontoolinput(
-    callback: (params: McpUiToolInputNotification["params"]) => void,
+    callback:
+      | ((params: McpUiToolInputNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("toolinput", callback);
+    this.setEventHandler("toolinput", callback);
   }
 
   /**
@@ -592,13 +599,13 @@ export class App extends ProtocolWithEvents<
    * (e.g., the last item in an array may be truncated). Use partial data only
    * for preview UI, not for critical operations.
    *
-   * This setter is a convenience wrapper around
-   * {@link addEventListener `addEventListener`} — assigning multiple times
-   * appends listeners rather than replacing them.
+   * This setter has DOM-style replace semantics (like `el.onclick`).
+   * Assigning replaces the previous handler; assigning `undefined` clears
+   * it. {@link addEventListener `addEventListener`} listeners are unaffected.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with each partial tool input update ({@link McpUiToolInputPartialNotification.params `McpUiToolInputPartialNotification.params`})
+   * @param callback - Function called with each partial tool input update ({@link McpUiToolInputPartialNotification.params `McpUiToolInputPartialNotification.params`}), or `undefined` to clear
    *
    * @example Progressive rendering of tool arguments
    * ```ts source="./app.examples.ts#App_ontoolinputpartial_progressiveRendering"
@@ -618,14 +625,21 @@ export class App extends ProtocolWithEvents<
    * };
    * ```
    *
-   * @see {@link addEventListener `addEventListener`} for the underlying method
+   * @see {@link addEventListener `addEventListener`} for multi-listener support
    * @see {@link McpUiToolInputPartialNotification `McpUiToolInputPartialNotification`} for the notification structure
    * @see {@link ontoolinput `ontoolinput`} for the complete tool input handler
    */
+  get ontoolinputpartial():
+    | ((params: McpUiToolInputPartialNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("toolinputpartial");
+  }
   set ontoolinputpartial(
-    callback: (params: McpUiToolInputPartialNotification["params"]) => void,
+    callback:
+      | ((params: McpUiToolInputPartialNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("toolinputpartial", callback);
+    this.setEventHandler("toolinputpartial", callback);
   }
 
   /**
@@ -635,13 +649,13 @@ export class App extends ProtocolWithEvents<
    * sends the result of a tool execution. This is sent after the tool completes
    * on the MCP server, allowing your app to display the results or update its state.
    *
-   * This setter is a convenience wrapper around
-   * {@link addEventListener `addEventListener`} — assigning multiple times
-   * appends listeners rather than replacing them.
+   * This setter has DOM-style replace semantics (like `el.onclick`).
+   * Assigning replaces the previous handler; assigning `undefined` clears
+   * it. {@link addEventListener `addEventListener`} listeners are unaffected.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with the tool result ({@link McpUiToolResultNotification.params `McpUiToolResultNotification.params`})
+   * @param callback - Function called with the tool result ({@link McpUiToolResultNotification.params `McpUiToolResultNotification.params`}), or `undefined` to clear
    *
    * @example Display tool execution results
    * ```ts source="./app.examples.ts#App_ontoolresult_displayResults"
@@ -654,14 +668,21 @@ export class App extends ProtocolWithEvents<
    * };
    * ```
    *
-   * @see {@link addEventListener `addEventListener`} for the underlying method
+   * @see {@link addEventListener `addEventListener`} for multi-listener support
    * @see {@link McpUiToolResultNotification `McpUiToolResultNotification`} for the notification structure
    * @see {@link ontoolinput `ontoolinput`} for the initial tool input handler
    */
+  get ontoolresult():
+    | ((params: McpUiToolResultNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("toolresult");
+  }
   set ontoolresult(
-    callback: (params: McpUiToolResultNotification["params"]) => void,
+    callback:
+      | ((params: McpUiToolResultNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("toolresult", callback);
+    this.setEventHandler("toolresult", callback);
   }
 
   /**
@@ -672,13 +693,13 @@ export class App extends ProtocolWithEvents<
    * including user action, sampling error, classifier intervention, or other
    * interruptions. Apps should update their state and display appropriate feedback.
    *
-   * This setter is a convenience wrapper around
-   * {@link addEventListener `addEventListener`} — assigning multiple times
-   * appends listeners rather than replacing them.
+   * This setter has DOM-style replace semantics (like `el.onclick`).
+   * Assigning replaces the previous handler; assigning `undefined` clears
+   * it. {@link addEventListener `addEventListener`} listeners are unaffected.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called when tool execution is cancelled. Receives optional cancellation reason — see {@link McpUiToolCancelledNotification.params `McpUiToolCancelledNotification.params`}.
+   * @param callback - Function called when tool execution is cancelled. Receives optional cancellation reason — see {@link McpUiToolCancelledNotification.params `McpUiToolCancelledNotification.params`}. Pass `undefined` to clear.
    *
    * @example Handle tool cancellation
    * ```ts source="./app.examples.ts#App_ontoolcancelled_handleCancellation"
@@ -688,14 +709,21 @@ export class App extends ProtocolWithEvents<
    * };
    * ```
    *
-   * @see {@link addEventListener `addEventListener`} for the underlying method
+   * @see {@link addEventListener `addEventListener`} for multi-listener support
    * @see {@link McpUiToolCancelledNotification `McpUiToolCancelledNotification`} for the notification structure
    * @see {@link ontoolresult `ontoolresult`} for successful tool completion
    */
+  get ontoolcancelled():
+    | ((params: McpUiToolCancelledNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("toolcancelled");
+  }
   set ontoolcancelled(
-    callback: (params: McpUiToolCancelledNotification["params"]) => void,
+    callback:
+      | ((params: McpUiToolCancelledNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("toolcancelled", callback);
+    this.setEventHandler("toolcancelled", callback);
   }
 
   /**
@@ -706,9 +734,9 @@ export class App extends ProtocolWithEvents<
    * other environmental updates. Apps should respond by updating their UI
    * accordingly.
    *
-   * This setter is a convenience wrapper around
-   * {@link addEventListener `addEventListener`} — assigning multiple times
-   * appends listeners rather than replacing them.
+   * This setter has DOM-style replace semantics (like `el.onclick`).
+   * Assigning replaces the previous handler; assigning `undefined` clears
+   * it. {@link addEventListener `addEventListener`} listeners are unaffected.
    *
    * Notification params are automatically merged into the internal host context
    * before the callback is invoked. This means {@link getHostContext `getHostContext`} will
@@ -716,7 +744,7 @@ export class App extends ProtocolWithEvents<
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with the updated host context
+   * @param callback - Function called with the updated host context, or `undefined` to clear
    *
    * @example Respond to theme changes
    * ```ts source="./app.examples.ts#App_onhostcontextchanged_respondToTheme"
@@ -729,14 +757,21 @@ export class App extends ProtocolWithEvents<
    * };
    * ```
    *
-   * @see {@link addEventListener `addEventListener`} for the underlying method
+   * @see {@link addEventListener `addEventListener`} for multi-listener support
    * @see {@link McpUiHostContextChangedNotification `McpUiHostContextChangedNotification`} for the notification structure
    * @see {@link McpUiHostContext `McpUiHostContext`} for the full context structure
    */
+  get onhostcontextchanged():
+    | ((params: McpUiHostContextChangedNotification["params"]) => void)
+    | undefined {
+    return this.getEventHandler("hostcontextchanged");
+  }
   set onhostcontextchanged(
-    callback: (params: McpUiHostContextChangedNotification["params"]) => void,
+    callback:
+      | ((params: McpUiHostContextChangedNotification["params"]) => void)
+      | undefined,
   ) {
-    this.addEventListener("hostcontextchanged", callback);
+    this.setEventHandler("hostcontextchanged", callback);
   }
 
   /**
@@ -770,16 +805,29 @@ export class App extends ProtocolWithEvents<
    * @see {@link setRequestHandler `setRequestHandler`} for the underlying method
    * @see {@link McpUiResourceTeardownRequest `McpUiResourceTeardownRequest`} for the request structure
    */
+  private _onteardown?: (
+    params: McpUiResourceTeardownRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => McpUiResourceTeardownResult | Promise<McpUiResourceTeardownResult>;
+
+  get onteardown() {
+    return this._onteardown;
+  }
   set onteardown(
-    callback: (
-      params: McpUiResourceTeardownRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => McpUiResourceTeardownResult | Promise<McpUiResourceTeardownResult>,
+    callback:
+      | ((
+          params: McpUiResourceTeardownRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => McpUiResourceTeardownResult | Promise<McpUiResourceTeardownResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(
-      McpUiResourceTeardownRequestSchema,
-      (request, extra) => callback(request.params, extra),
-    );
+    this._onteardown = callback;
+    if (callback) {
+      this.replaceRequestHandler(
+        McpUiResourceTeardownRequestSchema,
+        (request, extra) => callback(request.params, extra),
+      );
+    }
   }
 
   /**
@@ -813,15 +861,28 @@ export class App extends ProtocolWithEvents<
    *
    * @see {@link setRequestHandler `setRequestHandler`} for the underlying method
    */
+  private _oncalltool?: (
+    params: CallToolRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<CallToolResult>;
+
+  get oncalltool() {
+    return this._oncalltool;
+  }
   set oncalltool(
-    callback: (
-      params: CallToolRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<CallToolResult>,
+    callback:
+      | ((
+          params: CallToolRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<CallToolResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(CallToolRequestSchema, (request, extra) =>
-      callback(request.params, extra),
-    );
+    this._oncalltool = callback;
+    if (callback) {
+      this.replaceRequestHandler(CallToolRequestSchema, (request, extra) =>
+        callback(request.params, extra),
+      );
+    }
   }
 
   /**
@@ -870,15 +931,28 @@ export class App extends ProtocolWithEvents<
    * @see {@link setRequestHandler `setRequestHandler`} for the underlying method
    * @see {@link oncalltool `oncalltool`} for handling tool execution
    */
+  private _onlisttools?: (
+    params: ListToolsRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<ListToolsResult>;
+
+  get onlisttools() {
+    return this._onlisttools;
+  }
   set onlisttools(
-    callback: (
-      params: ListToolsRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<ListToolsResult>,
+    callback:
+      | ((
+          params: ListToolsRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<ListToolsResult>)
+      | undefined,
   ) {
-    this.setRequestHandler(ListToolsRequestSchema, (request, extra) =>
-      callback(request.params, extra),
-    );
+    this._onlisttools = callback;
+    if (callback) {
+      this.replaceRequestHandler(ListToolsRequestSchema, (request, extra) =>
+        callback(request.params, extra),
+      );
+    }
   }
 
   /**

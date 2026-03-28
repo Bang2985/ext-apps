@@ -2110,7 +2110,7 @@ describe("addEventListener / removeEventListener", () => {
     expect(b).toEqual([{ theme: "dark" }]);
   });
 
-  it("App notification setters append rather than replace", async () => {
+  it("App notification setters replace (DOM onclick model)", async () => {
     const a: unknown[] = [];
     const b: unknown[] = [];
     app.ontoolinput = (p) => a.push(p);
@@ -2120,8 +2120,44 @@ describe("addEventListener / removeEventListener", () => {
     await bridge.sendToolInput({ arguments: { x: 1 } });
     await flush();
 
+    // Second assignment replaced the first (like el.onclick)
+    expect(a).toEqual([]);
+    expect(b).toEqual([{ arguments: { x: 1 } }]);
+  });
+
+  it("App notification setter coexists with addEventListener", async () => {
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    app.ontoolinput = (p) => a.push(p);
+    app.addEventListener("toolinput", (p) => b.push(p));
+
+    await app.connect(appTransport);
+    await bridge.sendToolInput({ arguments: { x: 1 } });
+    await flush();
+
+    // Both the on* handler and addEventListener listener fire
     expect(a).toEqual([{ arguments: { x: 1 } }]);
     expect(b).toEqual([{ arguments: { x: 1 } }]);
+  });
+
+  it("App notification getter returns the on* handler", () => {
+    expect(app.ontoolinput).toBeUndefined();
+    const handler = () => {};
+    app.ontoolinput = handler;
+    expect(app.ontoolinput).toBe(handler);
+  });
+
+  it("App notification setter can be cleared with undefined", async () => {
+    const a: unknown[] = [];
+    app.ontoolinput = (p) => a.push(p);
+    app.ontoolinput = undefined;
+
+    await app.connect(appTransport);
+    await bridge.sendToolInput({ arguments: { x: 1 } });
+    await flush();
+
+    expect(a).toEqual([]);
+    expect(app.ontoolinput).toBeUndefined();
   });
 
   it("App.removeEventListener stops a listener from firing", async () => {
@@ -2162,38 +2198,54 @@ describe("addEventListener / removeEventListener", () => {
     expect(b).toBe(1);
   });
 
-  it("setRequestHandler throws when called twice for the same method", () => {
+  it("on* request setters have replace semantics (no throw)", () => {
     app.onteardown = async () => ({});
+    // Second assignment replaces — does not throw
     expect(() => {
       app.onteardown = async () => ({});
-    }).toThrow(/already registered/);
+    }).not.toThrow();
   });
 
-  it("setNotificationHandler throws when called twice for the same method", () => {
+  it("on* request setters have getters", () => {
+    expect(app.onteardown).toBeUndefined();
+    const handler = async () => ({});
+    app.onteardown = handler;
+    expect(app.onteardown).toBe(handler);
+  });
+
+  it("direct setRequestHandler throws when called twice", () => {
     const bridge2 = new AppBridge(
       createMockClient() as Client,
       testHostInfo,
       testHostCapabilities,
     );
-    bridge2.onrequestdisplaymode = async () => ({ mode: "inline" });
+    bridge2.setRequestHandler(
+      // @ts-expect-error — exercising throw path with raw schema
+      { shape: { method: { value: "test/method" } } },
+      () => ({}),
+    );
     expect(() => {
-      bridge2.onrequestdisplaymode = async () => ({ mode: "inline" });
+      bridge2.setRequestHandler(
+        // @ts-expect-error — exercising throw path with raw schema
+        { shape: { method: { value: "test/method" } } },
+        () => ({}),
+      );
     }).toThrow(/already registered/);
   });
 
-  it("addEventListener throws when setNotificationHandler was already called", () => {
+  it("direct setNotificationHandler throws for event-mapped methods", () => {
     const app2 = new App(testAppInfo, {}, { autoResize: false });
-    // Constructor already registered hostcontextchanged via addEventListener;
-    // pick an event the constructor did NOT touch.
-    app2.setNotificationHandler(
-      // @ts-expect-error — exercising throw path with raw schema
-      {
-        shape: { method: { value: "ui/notifications/tool-input" } },
-      },
-      () => {},
-    );
+    // toolinput is in the EventMap — once addEventListener or on* is used,
+    // direct setNotificationHandler should throw
+    app2.addEventListener("toolinput", () => {});
     expect(() => {
-      app2.addEventListener("toolinput", () => {});
+      app2.setNotificationHandler(
+        // @ts-expect-error — exercising throw path with raw schema
+        {
+          shape: { method: { value: "ui/notifications/tool-input" } },
+        },
+        () => {},
+      );
     }).toThrow(/already registered/);
   });
 });
