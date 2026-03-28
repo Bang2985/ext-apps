@@ -1,11 +1,17 @@
 /**
- * MCP Server for managing virtual desktops using LinuxServer webtop containers.
+ * MCP Server for virtual desktops.
  *
  * Tools:
- * - ListDesktops: List all virtual desktop containers
- * - CreateDesktop: Create a new virtual desktop
- * - ViewDesktop: View a virtual desktop (has MCP App UI)
- * - ShutdownDesktop: Stop and remove a virtual desktop
+ * - connect-desktop: Connect to any remote desktop via noVNC (URL-based)
+ * - list-desktops: List Docker-managed virtual desktop containers
+ * - create-desktop: Create a new virtual desktop container
+ * - view-desktop: View a Docker-managed virtual desktop (has MCP App UI)
+ * - shutdown-desktop: Stop and remove a virtual desktop container
+ * - open-home-folder: Open the desktop's home folder on the host
+ * - take-screenshot: Take a screenshot of a virtual desktop
+ * - exec: Execute a command inside a virtual desktop container
+ * - click / type-text / press-key / move-mouse / scroll: Input automation
+ * - resize-desktop: Resize a virtual desktop by restarting VNC
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -58,6 +64,24 @@ const MountSchema = z.object({
 
 const DEFAULT_DESKTOP_NAME = "my-desktop";
 
+const ConnectDesktopInputSchema = z.object({
+  url: z
+    .string()
+    .describe(
+      "Base URL of the desktop (e.g. https://my-webtop.example.com:3001). " +
+        "The websocket URL will be derived by replacing https→wss and appending the websocketPath.",
+    ),
+  password: z.string().optional().describe("VNC password (if required)"),
+  websocketPath: z
+    .string()
+    .default("/websockify")
+    .describe("Path to the websockify endpoint (default: /websockify)"),
+  name: z
+    .string()
+    .default("Remote Desktop")
+    .describe("Display name for the desktop"),
+});
+
 const CreateDesktopInputSchema = z.object({
   name: z
     .string()
@@ -102,9 +126,6 @@ const ShutdownDesktopInputSchema = z.object({
 // Helpers
 // ============================================================================
 
-/**
- * Format desktop info for display.
- */
 function formatDesktopInfo(desktop: DesktopInfo): string {
   const lines = [
     `Name: ${desktop.name}`,
@@ -125,37 +146,159 @@ function formatDesktopInfo(desktop: DesktopInfo): string {
   return lines.join("\n");
 }
 
+/** Helper to check Docker and return an error result if unavailable. */
+async function requireDocker(): Promise<CallToolResult | null> {
+  if (await checkDocker()) return null;
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text",
+        text: "Docker is not available. Please ensure Docker is installed and running.",
+      },
+    ],
+  };
+}
+
+type DesktopResult =
+  | { ok: true; desktop: DesktopInfo; containerName: string }
+  | { ok: false; error: CallToolResult };
+
+/** Helper to look up a running desktop or return an error result. */
+async function requireRunningDesktop(name: string): Promise<DesktopResult> {
+  const dockerErr = await requireDocker();
+  if (dockerErr) return { ok: false, error: dockerErr };
+
+  const desktop = await getDesktop(name);
+  if (!desktop) {
+    const baseName = name.startsWith(CONTAINER_PREFIX)
+      ? name.slice(CONTAINER_PREFIX.length)
+      : name;
+    return {
+      ok: false,
+      error: {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `Desktop "${name}" not found. Create it first with: create-desktop { "name": "${baseName}" }. Or use list-desktops to see available desktops.`,
+          },
+        ],
+      },
+    };
+  }
+
+  if (desktop.status !== "running") {
+    return {
+      ok: false,
+      error: {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: `Desktop "${name}" is not running (status: ${desktop.status}). Please start it first.`,
+          },
+        ],
+      },
+    };
+  }
+
+  return { ok: true, desktop, containerName: desktop.name };
+}
+
 // ============================================================================
 // Server
 // ============================================================================
 
-/**
- * Creates a new MCP server instance with virtual desktop tools.
- */
 export function createVirtualDesktopServer(): McpServer {
   const server = new McpServer({
     name: "Virtual Desktop Server",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
-  // ==================== ListDesktops ====================
-  server.tool(
-    "list-desktops",
-    "List all virtual desktop containers",
-    {},
-    async (): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
+  const viewDesktopResourceUri = "ui://view-desktop/mcp-app.html";
+
+  // CSP configuration shared by connect-desktop and view-desktop
+  const viewDesktopCsp = {
+    resourceDomains: ["https://cdn.jsdelivr.net"],
+    connectDomains: [
+      "ws://*",
+      "wss://*",
+      "https://cdn.jsdelivr.net",
+    ],
+  };
+
+  // ==================== ConnectDesktop (URL-based, no Docker) ====================
+  registerAppTool(
+    server,
+    "connect-desktop",
+    {
+      title: "Connect Desktop",
+      description:
+        "Connect to a remote desktop via noVNC given its URL. " +
+        "Works with any webtop or VNC server that exposes a websockify endpoint over HTTP(S). " +
+        "To create a local Docker desktop instead, use create-desktop then view-desktop.",
+      inputSchema: ConnectDesktopInputSchema.shape,
+      _meta: { ui: { resourceUri: viewDesktopResourceUri } },
+    },
+    async (args: {
+      url: string;
+      password?: string;
+      websocketPath: string;
+      name: string;
+    }): Promise<CallToolResult> => {
+      const baseUrl = args.url.replace(/\/+$/, "");
+      const wsUrl =
+        baseUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:") +
+        args.websocketPath;
+
+      try {
+        await fetch(baseUrl, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch {
         return {
           isError: true,
           content: [
             {
               type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
+              text: `Cannot reach ${baseUrl}. Make sure the desktop is running and accessible.`,
             },
           ],
         };
       }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `Desktop "${args.name}" is reachable.`,
+              ``,
+              `Open in browser: ${baseUrl}`,
+              `WebSocket URL: ${wsUrl}`,
+            ].join("\n"),
+          },
+        ],
+        structuredContent: {
+          name: args.name,
+          url: baseUrl,
+          wsUrl,
+          password: args.password ?? "",
+        },
+      };
+    },
+  );
+
+  // ==================== ListDesktops ====================
+  server.tool(
+    "list-desktops",
+    "List all Docker-managed virtual desktop containers. Use create-desktop to create new ones, view-desktop to connect, shutdown-desktop to remove.",
+    {},
+    async (): Promise<CallToolResult> => {
+      const dockerErr = await requireDocker();
+      if (dockerErr) return dockerErr;
 
       const desktops = await listDesktops();
 
@@ -188,21 +331,11 @@ export function createVirtualDesktopServer(): McpServer {
   // ==================== CreateDesktop ====================
   server.tool(
     "create-desktop",
-    "Create a new virtual desktop container",
+    "Create a new virtual desktop container via Docker. After creation, use view-desktop to open the noVNC viewer. Use list-desktops to see existing desktops, shutdown-desktop to remove them. To connect to an existing remote desktop by URL instead, use connect-desktop.",
     CreateDesktopInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
+      const dockerErr = await requireDocker();
+      if (dockerErr) return dockerErr;
 
       try {
         const result = await createDesktop({
@@ -244,61 +377,24 @@ export function createVirtualDesktopServer(): McpServer {
     },
   );
 
-  // ==================== ViewDesktop ====================
-  const viewDesktopResourceUri = "ui://view-desktop/mcp-app.html";
-
+  // ==================== ViewDesktop (Docker) ====================
   registerAppTool(
     server,
     "view-desktop",
     {
       title: "View Desktop",
-      description: "View and interact with a virtual desktop",
+      description:
+        "View and interact with a Docker-managed virtual desktop via noVNC. " +
+        "The desktop must be created first with create-desktop. " +
+        "Use take-screenshot, click, type-text, press-key, exec to interact programmatically. " +
+        "To connect to a remote desktop by URL instead, use connect-desktop.",
       inputSchema: ViewDesktopInputSchema.shape,
       _meta: { ui: { resourceUri: viewDesktopResourceUri } },
     },
     async (args: { name: string }): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        // Extract the base name from the full container name for the suggestion
-        const baseName = args.name.startsWith(CONTAINER_PREFIX)
-          ? args.name.slice(CONTAINER_PREFIX.length)
-          : args.name;
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Create it first with: create-desktop { "name": "${baseName}" }. Or use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}). Please start it first.`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop } = result;
 
       if (!desktop.port) {
         return {
@@ -312,7 +408,6 @@ export function createVirtualDesktopServer(): McpServer {
         };
       }
 
-      // Wait for VNC endpoint to be ready before returning success
       const vncReady = await waitForVncReady(desktop.port);
       if (!vncReady) {
         return {
@@ -346,7 +441,6 @@ export function createVirtualDesktopServer(): McpServer {
             ].join("\n"),
           },
         ],
-        // Pass structured data to the MCP App
         structuredContent: {
           name: desktop.name,
           url,
@@ -361,25 +455,14 @@ export function createVirtualDesktopServer(): McpServer {
     },
   );
 
-  // CSP configuration for the MCP App
-  const viewDesktopCsp = {
-    // Allow loading noVNC library from jsdelivr CDN
-    resourceDomains: ["https://cdn.jsdelivr.net"],
-    // Allow WebSocket connections to localhost for VNC, and HTTPS for source maps
-    connectDomains: [
-      "ws://localhost:*",
-      "wss://localhost:*",
-      "https://cdn.jsdelivr.net",
-    ],
-  };
-
+  // Register the shared resource for the noVNC viewer UI
   registerAppResource(
     server,
     viewDesktopResourceUri,
     viewDesktopResourceUri,
     {
       mimeType: RESOURCE_MIME_TYPE,
-      description: "Virtual Desktop Viewer",
+      description: "Remote Desktop Viewer (noVNC)",
     },
     async (): Promise<ReadResourceResult> => {
       const html = await fs.readFile(
@@ -392,7 +475,6 @@ export function createVirtualDesktopServer(): McpServer {
             uri: viewDesktopResourceUri,
             mimeType: RESOURCE_MIME_TYPE,
             text: html,
-            // CSP must be in content._meta for hosts to read it
             _meta: {
               ui: {
                 csp: viewDesktopCsp,
@@ -407,21 +489,11 @@ export function createVirtualDesktopServer(): McpServer {
   // ==================== ShutdownDesktop ====================
   server.tool(
     "shutdown-desktop",
-    "Stop and remove a virtual desktop container",
+    "Stop and remove a Docker-managed virtual desktop container. Use list-desktops to see available desktops. Use create-desktop to create new ones.",
     ShutdownDesktopInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
+      const dockerErr = await requireDocker();
+      if (dockerErr) return dockerErr;
 
       const desktop = await getDesktop(args.name);
 
@@ -477,7 +549,7 @@ export function createVirtualDesktopServer(): McpServer {
     {
       title: "Open Home Folder",
       description:
-        "Open the desktop's home folder on the host machine's file manager",
+        "Open a Docker-managed desktop's home folder on the host machine's file manager. The home folder is shared between the host and the container. Use create-desktop to create a desktop first.",
       inputSchema: OpenHomeFolderInputSchema.shape,
       _meta: {
         ui: {
@@ -500,8 +572,6 @@ export function createVirtualDesktopServer(): McpServer {
         };
       }
 
-      // Construct the host path to the desktop's home folder
-      // Use the resolved container name for the path
       const homeFolder = path.join(VIRTUAL_DESKTOPS_DIR, desktop.name, "home");
 
       try {
@@ -509,7 +579,6 @@ export function createVirtualDesktopServer(): McpServer {
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use platform-specific open command
         const platform = process.platform;
         let openCmd: string;
         if (platform === "darwin") {
@@ -517,7 +586,6 @@ export function createVirtualDesktopServer(): McpServer {
         } else if (platform === "win32") {
           openCmd = `explorer "${homeFolder}"`;
         } else {
-          // Linux and others
           openCmd = `xdg-open "${homeFolder}"`;
         }
 
@@ -552,62 +620,22 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "take-screenshot",
-    "Take a screenshot of the virtual desktop and return it as an image",
+    "Take a screenshot of a Docker-managed virtual desktop and return it as an image. Requires a running desktop (use create-desktop to create one, list-desktops to see existing). Use click, type-text, press-key, exec to interact with the desktop.",
     TakeScreenshotInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name from desktop
-        const containerName = desktop.name;
-
-        // Take screenshot using scrot or import (ImageMagick) and output to stdout as PNG
-        // Try scrot first, fall back to import (ImageMagick)
         const { stdout } = await execAsync(
           `docker exec ${containerName} bash -c "DISPLAY=:1 scrot -o /tmp/screenshot.png && base64 /tmp/screenshot.png" 2>/dev/null || ` +
             `docker exec ${containerName} bash -c "DISPLAY=:1 import -window root /tmp/screenshot.png && base64 /tmp/screenshot.png"`,
-          { maxBuffer: 50 * 1024 * 1024 }, // 50MB buffer for large screenshots
+          { maxBuffer: 50 * 1024 * 1024 },
         );
 
         return {
@@ -652,61 +680,22 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "click",
-    "Click at a specific position on the virtual desktop",
+    "Click at a specific position on a Docker-managed virtual desktop. Use take-screenshot first to see the desktop and determine coordinates. Other input tools: type-text, press-key, move-mouse, scroll.",
     ClickInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name
-        const containerName = desktop.name;
-
         const button = args.button || "left";
         const clicks = args.clicks || 1;
         const buttonNum = button === "left" ? 1 : button === "middle" ? 2 : 3;
 
-        // Use xdotool to click at the specified position
         const clickCmd =
           clicks === 1
             ? `xdotool mousemove ${args.x} ${args.y} click ${buttonNum}`
@@ -752,60 +741,19 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "type-text",
-    "Type text on the virtual desktop (simulates keyboard input)",
+    "Type text on a Docker-managed virtual desktop (simulates keyboard input). Use click to focus an input field first. Use press-key for special keys (Return, Tab, etc.). Use take-screenshot to see the result.",
     TypeTextInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name
-        const containerName = desktop.name;
-
         const delay = args.delay ?? 12;
-
-        // Escape the text for shell and use xdotool to type it
-        // Using --clearmodifiers to ensure modifier keys don't interfere
         const escapedText = args.text.replace(/'/g, "'\\''");
         await execAsync(
           `docker exec ${containerName} bash -c "DISPLAY=:1 xdotool type --clearmodifiers --delay ${delay} '${escapedText}'"`,
@@ -845,57 +793,18 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "press-key",
-    "Press a key or key combination on the virtual desktop",
+    "Press a key or key combination on a Docker-managed virtual desktop. Use type-text for typing strings, click to position the cursor first. Use take-screenshot to verify the result.",
     PressKeyInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name
-        const containerName = desktop.name;
-
-        // Use xdotool to press the key
         await execAsync(
           `docker exec ${containerName} bash -c "DISPLAY=:1 xdotool key --clearmodifiers ${args.key}"`,
         );
@@ -931,55 +840,17 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "move-mouse",
-    "Move the mouse cursor to a specific position on the virtual desktop",
+    "Move the mouse cursor to a specific position on a Docker-managed virtual desktop. Use take-screenshot to determine coordinates. Use click to click at a position, scroll to scroll.",
     MoveMouseInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
-
-        // Use the resolved container name
-        const containerName = desktop.name;
 
         await execAsync(
           `docker exec ${containerName} bash -c "DISPLAY=:1 xdotool mousemove ${args.x} ${args.y}"`,
@@ -1023,58 +894,19 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "scroll",
-    "Scroll on the virtual desktop",
+    "Scroll on a Docker-managed virtual desktop. Use click or move-mouse to position the cursor first. Use take-screenshot to verify the result.",
     ScrollInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name
-        const containerName = desktop.name;
-
         const amount = args.amount || 3;
-        // xdotool uses button 4 for scroll up, 5 for scroll down, 6 for left, 7 for right
         const buttonMap = { up: 4, down: 5, left: 6, right: 7 };
         const button = buttonMap[args.direction];
 
@@ -1128,70 +960,28 @@ export function createVirtualDesktopServer(): McpServer {
 
   server.tool(
     "exec",
-    "Execute a command inside the virtual desktop container. Commands run with DISPLAY=:1 so GUI apps appear in VNC.",
+    "Execute a command inside a Docker-managed virtual desktop container. Commands run with DISPLAY=:1 so GUI apps appear in VNC. Use background=true for GUI apps that don't exit (e.g. firefox). Use take-screenshot to see the desktop after running commands. Use create-desktop to create a desktop first.",
     ExecInputSchema.shape,
     async (args): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        // Use the resolved container name
-        const containerName = desktop.name;
-
         const timeout = args.timeout ?? 30000;
         const background = args.background ?? false;
 
-        // Escape single quotes in the command
         const escapedCommand = args.command.replace(/'/g, "'\\''");
 
-        // Build the docker exec command
-        // DISPLAY=:1 ensures GUI apps show in the VNC display
         const dockerCmd = background
           ? `docker exec -d ${containerName} bash -c "DISPLAY=:1 ${escapedCommand}"`
           : `docker exec ${containerName} bash -c "DISPLAY=:1 ${escapedCommand}"`;
 
         if (background) {
-          // For background commands, just start them and return
           await execAsync(dockerCmd);
           return {
             content: [
@@ -1202,19 +992,14 @@ export function createVirtualDesktopServer(): McpServer {
             ],
           };
         } else {
-          // For foreground commands, capture output
           const { stdout, stderr } = await execAsync(dockerCmd, {
             timeout,
-            maxBuffer: 10 * 1024 * 1024, // 10MB
+            maxBuffer: 10 * 1024 * 1024,
           });
 
           const output = [];
-          if (stdout.trim()) {
-            output.push(`stdout:\n${stdout.trim()}`);
-          }
-          if (stderr.trim()) {
-            output.push(`stderr:\n${stderr.trim()}`);
-          }
+          if (stdout.trim()) output.push(`stdout:\n${stdout.trim()}`);
+          if (stderr.trim()) output.push(`stderr:\n${stderr.trim()}`);
 
           return {
             content: [
@@ -1229,7 +1014,6 @@ export function createVirtualDesktopServer(): McpServer {
           };
         }
       } catch (error: unknown) {
-        // Handle exec errors (non-zero exit codes, timeouts, etc.)
         const execError = error as {
           stdout?: string;
           stderr?: string;
@@ -1250,17 +1034,13 @@ export function createVirtualDesktopServer(): McpServer {
           };
         }
 
-        // Include stdout/stderr even on error
         const output = [];
-        if (execError.stdout?.trim()) {
+        if (execError.stdout?.trim())
           output.push(`stdout:\n${execError.stdout.trim()}`);
-        }
-        if (execError.stderr?.trim()) {
+        if (execError.stderr?.trim())
           output.push(`stderr:\n${execError.stderr.trim()}`);
-        }
-        if (execError.code !== undefined) {
+        if (execError.code !== undefined)
           output.push(`exit code: ${execError.code}`);
-        }
 
         return {
           isError: true,
@@ -1291,7 +1071,7 @@ export function createVirtualDesktopServer(): McpServer {
     {
       title: "Resize Desktop",
       description:
-        "Resize the virtual desktop to exact dimensions by restarting VNC. This will briefly disconnect the viewer.",
+        "Resize a Docker-managed virtual desktop to exact dimensions by restarting VNC. This will briefly disconnect the noVNC viewer (view-desktop). Use take-screenshot to verify the new resolution.",
       inputSchema: ResizeDesktopInputSchema.shape,
       _meta: {
         ui: {
@@ -1304,61 +1084,22 @@ export function createVirtualDesktopServer(): McpServer {
       width: number;
       height: number;
     }): Promise<CallToolResult> => {
-      const dockerAvailable = await checkDocker();
-      if (!dockerAvailable) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Docker is not available. Please ensure Docker is installed and running.",
-            },
-          ],
-        };
-      }
-
-      const desktop = await getDesktop(args.name);
-
-      if (!desktop) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" not found. Use list-desktops to see available desktops.`,
-            },
-          ],
-        };
-      }
-
-      if (desktop.status !== "running") {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Desktop "${args.name}" is not running (status: ${desktop.status}).`,
-            },
-          ],
-        };
-      }
+      const result = await requireRunningDesktop(args.name);
+      if (!result.ok) return result.error;
+      const { desktop, containerName } = result;
 
       try {
         const { exec } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const execAsync = promisify(exec);
 
-        const containerName = desktop.name;
         const resolution = `${args.width}x${args.height}`;
 
-        // Restart VNC with new geometry and restart the window manager
-        // The consol/ubuntu-xfce-vnc image uses wm_startup.sh to start XFCE
         const cmd = [
           "vncserver -kill :1 2>/dev/null",
           "sleep 1",
           `vncserver :1 -depth 24 -geometry ${resolution}`,
           "sleep 2",
-          // Restart the window manager (XFCE) - the script handles this
           "DISPLAY=:1 /headless/wm_startup.sh &",
         ].join("; ");
 
@@ -1366,7 +1107,6 @@ export function createVirtualDesktopServer(): McpServer {
           timeout: 30000,
         });
 
-        // Wait for desktop environment to be ready
         await new Promise((resolve) => setTimeout(resolve, 3000));
 
         return {

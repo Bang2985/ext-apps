@@ -1,8 +1,8 @@
 {
   "name": "@anthropic/mcp-server-virtual-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "MCP server for managing virtual desktops using LinuxServer webtop containers",
+  "description": "MCP server with noVNC viewer to connect to remote desktops (webtop, VNC) over HTTPS",
   "repository": {
     "type": "git",
     "url": "https://github.com/modelcontextprotocol/ext-apps",
