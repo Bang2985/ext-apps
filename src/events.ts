@@ -188,19 +188,6 @@ export abstract class ProtocolWithEvents<
 
   // ── Handler registration with double-set protection ─────────────────
 
-  /**
-   * Register a request handler without tracking it. Subclass constructors
-   * use this for overridable defaults — a later `setRequestHandler` call
-   * (or `on*` setter) for the same method will succeed, replacing the
-   * default.
-   */
-  protected setDefaultRequestHandler: Protocol<
-    SendRequestT,
-    SendNotificationT,
-    SendResultT
-  >["setRequestHandler"] = (schema, handler) =>
-    super.setRequestHandler(schema, handler);
-
   // The two overrides below are arrow-function class fields rather than
   // prototype methods so that Protocol's constructor — which registers its
   // own ping/cancelled/progress handlers via `this.setRequestHandler`

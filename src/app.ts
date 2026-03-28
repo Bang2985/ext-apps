@@ -415,9 +415,9 @@ export class App extends ProtocolWithEvents<
     }
     this._toolHandlersInitialized = true;
 
-    // Register via setDefaultRequestHandler so users can still override with
+    // Register via replaceRequestHandler so users can still override with
     // their own oncalltool/onlisttools after calling registerTool.
-    this.setDefaultRequestHandler(
+    this.replaceRequestHandler(
       CallToolRequestSchema,
       async (request, extra) => {
         const tool = this._registeredTools[request.params.name];
@@ -427,7 +427,7 @@ export class App extends ProtocolWithEvents<
         return (tool.handler as any)(request.params.arguments as any, extra);
       },
     );
-    this.setDefaultRequestHandler(ListToolsRequestSchema, async () => {
+    this.replaceRequestHandler(ListToolsRequestSchema, async () => {
       const tools: Tool[] = Object.entries(this._registeredTools)
         .filter(([_, tool]) => tool.enabled)
         .map(([name, tool]) => {

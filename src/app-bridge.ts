@@ -372,7 +372,7 @@ export class AppBridge extends ProtocolWithEvents<
 
     // Default handler for requestDisplayMode - returns current mode from host context.
     // Hosts can override this by setting bridge.onrequestdisplaymode = ...
-    this.setDefaultRequestHandler(
+    this.replaceRequestHandler(
       McpUiRequestDisplayModeRequestSchema,
       (request) => {
         const currentMode = this._hostContext.displayMode ?? "inline";
