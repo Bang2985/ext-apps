@@ -24,6 +24,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { AppNotification, AppRequest, AppResult } from "./types";
 import { ProtocolWithEvents } from "./events";
+export { ProtocolWithEvents };
 import { PostMessageTransport } from "./message-transport";
 import {
   LATEST_PROTOCOL_VERSION,
@@ -167,7 +168,7 @@ type RequestHandlerExtra = Parameters<
  * to provide type-safe `addEventListener` / `removeEventListener` and
  * singular `on*` handler support.
  */
-type AppEventMap = {
+export type AppEventMap = {
   toolinput: McpUiToolInputNotification["params"];
   toolinputpartial: McpUiToolInputPartialNotification["params"];
   toolresult: McpUiToolResultNotification["params"];
@@ -386,8 +387,6 @@ export class App extends ProtocolWithEvents<
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with the tool input params ({@link McpUiToolInputNotification.params `McpUiToolInputNotification.params`})
-   *
    * @example
    * ```ts source="./app.examples.ts#App_ontoolinput_setter"
    * // Register before connecting to ensure no notifications are missed
@@ -431,8 +430,6 @@ export class App extends ProtocolWithEvents<
    * without replacing.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
-   *
-   * @param callback - Function called with each partial tool input update ({@link McpUiToolInputPartialNotification.params `McpUiToolInputPartialNotification.params`})
    *
    * @example Progressive rendering of tool arguments
    * ```ts source="./app.examples.ts#App_ontoolinputpartial_progressiveRendering"
@@ -482,8 +479,6 @@ export class App extends ProtocolWithEvents<
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
    *
-   * @param callback - Function called with the tool result ({@link McpUiToolResultNotification.params `McpUiToolResultNotification.params`})
-   *
    * @example Display tool execution results
    * ```ts source="./app.examples.ts#App_ontoolresult_displayResults"
    * app.ontoolresult = (params) => {
@@ -525,8 +520,6 @@ export class App extends ProtocolWithEvents<
    * without replacing.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
-   *
-   * @param callback - Function called when tool execution is cancelled. Receives optional cancellation reason — see {@link McpUiToolCancelledNotification.params `McpUiToolCancelledNotification.params`}.
    *
    * @example Handle tool cancellation
    * ```ts source="./app.examples.ts#App_ontoolcancelled_handleCancellation"
@@ -571,8 +564,6 @@ export class App extends ProtocolWithEvents<
    * updated values even before your callback runs.
    *
    * Register handlers before calling {@link connect `connect`} to avoid missing notifications.
-   *
-   * @param callback - Function called with the updated host context
    *
    * @example Respond to theme changes
    * ```ts source="./app.examples.ts#App_onhostcontextchanged_respondToTheme"

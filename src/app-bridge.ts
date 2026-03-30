@@ -227,6 +227,21 @@ type RequestHandlerExtra = Parameters<
 >[1];
 
 /**
+ * Maps DOM-style event names to their notification `params` types.
+ *
+ * Used by {@link AppBridge `AppBridge`} to provide type-safe
+ * `addEventListener` / `removeEventListener` and singular `on*` handler
+ * support.
+ */
+export type AppBridgeEventMap = {
+  sizechange: McpUiSizeChangedNotification["params"];
+  sandboxready: McpUiSandboxProxyReadyNotification["params"];
+  initialized: McpUiInitializedNotification["params"];
+  requestteardown: McpUiRequestTeardownNotification["params"];
+  loggingmessage: LoggingMessageNotification["params"];
+};
+
+/**
  * Host-side bridge for communicating with a single View ({@link app!App `App`}).
  *
  * `AppBridge` extends the MCP SDK's `Protocol` class and acts as a proxy between
@@ -283,14 +298,6 @@ type RequestHandlerExtra = Parameters<
  * await bridge.connect(transport);
  * ```
  */
-type AppBridgeEventMap = {
-  sizechange: McpUiSizeChangedNotification["params"];
-  sandboxready: McpUiSandboxProxyReadyNotification["params"];
-  initialized: McpUiInitializedNotification["params"];
-  requestteardown: McpUiRequestTeardownNotification["params"];
-  loggingmessage: LoggingMessageNotification["params"];
-};
-
 export class AppBridge extends ProtocolWithEvents<
   AppRequest,
   AppNotification,
@@ -765,9 +772,6 @@ export class AppBridge extends ProtocolWithEvents<
    * `ui/resource-teardown` (via {@link teardownResource `teardownResource`}) to allow
    * the view to perform gracefull termination, then unmount the iframe after the view responds.
    *
-   * @param callback - Handler that receives teardown request params
-   *   - params - Empty object (reserved for future use)
-   *
    * @example
    * ```typescript
    * bridge.onrequestteardown = async (params) => {
@@ -871,10 +875,10 @@ export class AppBridge extends ProtocolWithEvents<
    * This uses the standard MCP logging notification format, not a UI-specific
    * message type.
    *
-   * @param callback - Handler that receives logging params
-   *   - `params.level` - Log level: "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
-   *   - `params.logger` - Optional logger name/identifier
-   *   - `params.data` - Log message and optional structured data
+   * The handler receives `LoggingMessageNotification["params"]`:
+   *   - `level` — "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
+   *   - `logger` — optional logger name/identifier
+   *   - `data` — log message and optional structured data
    *
    * @example
    * ```ts source="./app-bridge.examples.ts#AppBridge_onloggingmessage_handleLog"
