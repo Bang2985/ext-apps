@@ -2708,6 +2708,60 @@ async function buildFieldNameMap(
   log.info(`Built field name map: ${fieldNameToIds.size} fields`);
 }
 
+/**
+ * Set one form field's value in pdf.js's annotationStorage, in the format
+ * AnnotationLayer expects to READ when it re-renders.
+ *
+ * Radio buttons need per-widget booleans: pdf.js's RadioButtonWidgetAnnotation
+ * render() has inverted string coercion (`value !== buttonValue` → true for
+ * every NON-matching widget), so a string value on all widgets checks the
+ * first rendered one and clears the rest regardless of what you asked for.
+ * Match pdf.js's own change handler instead: `{value: true}` on the widget
+ * whose buttonValue matches, `{value: false}` on the siblings.
+ *
+ * Also patches the live DOM element for the current page so the user sees the
+ * change without waiting for a full re-render.
+ */
+function setFieldInStorage(name: string, value: string | boolean): void {
+  if (!pdfDocument) return;
+  const ids = fieldNameToIds.get(name);
+  if (!ids) return;
+  const storage = pdfDocument.annotationStorage;
+
+  // Radio group: at least one widget ID has a buttonValue recorded.
+  const isRadio = ids.some((id) => radioButtonValues.has(id));
+  if (isRadio) {
+    const want = String(value);
+    for (const id of ids) {
+      const checked = radioButtonValues.get(id) === want;
+      storage.setValue(id, { value: checked });
+      const el = formLayerEl.querySelector(
+        `input[data-element-id="${id}"]`,
+      ) as HTMLInputElement | null;
+      if (el) el.checked = checked;
+    }
+    return;
+  }
+
+  // Text / checkbox / select: same value on every widget (a field can have
+  // multiple widget annotations sharing one /V).
+  const storageValue = typeof value === "boolean" ? value : String(value);
+  for (const id of ids) {
+    storage.setValue(id, { value: storageValue });
+    const el = formLayerEl.querySelector(`[data-element-id="${id}"]`) as
+      | HTMLInputElement
+      | HTMLSelectElement
+      | HTMLTextAreaElement
+      | null;
+    if (!el) continue;
+    if (el instanceof HTMLInputElement && el.type === "checkbox") {
+      el.checked = !!value;
+    } else {
+      el.value = String(value);
+    }
+  }
+}
+
 /** Sync formFieldValues into pdfDocument.annotationStorage so AnnotationLayer renders pre-filled values.
  *  Skips values that match the PDF's baseline — those are already in storage
  *  in pdf.js's native format (which may differ from our string/bool repr,
@@ -2715,17 +2769,9 @@ async function buildFieldNameMap(
  *  form can break the Reset button's ability to restore defaults. */
 function syncFormValuesToStorage(): void {
   if (!pdfDocument || fieldNameToIds.size === 0) return;
-  const storage = pdfDocument.annotationStorage;
   for (const [name, value] of formFieldValues) {
     if (pdfBaselineFormValues.get(name) === value) continue;
-    const ids = fieldNameToIds.get(name);
-    if (ids) {
-      for (const id of ids) {
-        storage.setValue(id, {
-          value: typeof value === "boolean" ? value : String(value),
-        });
-      }
-    }
+    setFieldInStorage(name, value);
   }
 }
 
@@ -4222,44 +4268,10 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
       case "fill_form":
         for (const field of cmd.fields) {
           formFieldValues.set(field.name, field.value);
-          // Set in PDF.js annotation storage and update DOM elements directly
-          if (pdfDocument) {
-            const ids = fieldNameToIds.get(field.name);
-            if (ids) {
-              for (const id of ids) {
-                pdfDocument.annotationStorage.setValue(id, {
-                  value:
-                    typeof field.value === "boolean"
-                      ? field.value
-                      : String(field.value),
-                });
-                // Update the live DOM element if it exists on the current page
-                const el = formLayerEl.querySelector(
-                  `[data-element-id="${id}"]`,
-                ) as
-                  | HTMLInputElement
-                  | HTMLSelectElement
-                  | HTMLTextAreaElement
-                  | null;
-                if (el) {
-                  if (
-                    el instanceof HTMLInputElement &&
-                    el.type === "checkbox"
-                  ) {
-                    el.checked = !!field.value;
-                  } else if (el instanceof HTMLSelectElement) {
-                    el.value = String(field.value);
-                  } else {
-                    el.value = String(field.value);
-                  }
-                }
-              }
-            } else {
-              log.info(
-                `fill_form: no annotation IDs for field "${field.name}"`,
-              );
-            }
+          if (!fieldNameToIds.has(field.name)) {
+            log.info(`fill_form: no annotation IDs for field "${field.name}"`);
           }
+          setFieldInStorage(field.name, field.value);
         }
         // Re-render to show updated form values (handles fields on other pages)
         renderPage();

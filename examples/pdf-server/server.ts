@@ -857,6 +857,10 @@ interface FormFieldInfo {
   y: number;
   width: number;
   height: number;
+  /** Radio button export value (buttonValue) — distinguishes widgets that share a field name. */
+  exportValue?: string;
+  /** Dropdown/listbox option values, as seen in the widget's `options` array. */
+  options?: string[];
 }
 
 /**
@@ -909,6 +913,16 @@ async function extractFormFieldInfo(
         // Convert to model coords (top-left origin): modelY = pageHeight - pdfY - height
         const modelY = pageHeight - y2;
 
+        // Choice widgets (combo/listbox) carry `options` as
+        // [{exportValue, displayValue}]. Expose export values — that's
+        // what fill_form needs.
+        let options: string[] | undefined;
+        if (Array.isArray(ann.options) && ann.options.length > 0) {
+          options = ann.options
+            .map((o: { exportValue?: string }) => o?.exportValue)
+            .filter((v: unknown): v is string => typeof v === "string");
+        }
+
         fields.push({
           name: fieldName,
           type: fieldType,
@@ -918,6 +932,12 @@ async function extractFormFieldInfo(
           width: Math.round(width),
           height: Math.round(height),
           ...(ann.alternativeText ? { label: ann.alternativeText } : undefined),
+          // Radio: buttonValue is the per-widget export value — the only
+          // thing distinguishing three `size [Btn]` lines from each other.
+          ...(ann.radioButton && ann.buttonValue != null
+            ? { exportValue: String(ann.buttonValue) }
+            : undefined),
+          ...(options?.length ? { options } : undefined),
         });
       }
     }
@@ -1327,6 +1347,14 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
               y: z.number(),
               width: z.number(),
               height: z.number(),
+              exportValue: z
+                .string()
+                .optional()
+                .describe("Radio button value — pass this to fill_form"),
+              options: z
+                .array(z.string())
+                .optional()
+                .describe("Dropdown/listbox option values"),
             }),
           )
           .optional()
@@ -1498,8 +1526,14 @@ URL: ${normalized}`,
           for (const f of fields) {
             const label = f.label ? ` "${f.label}"` : "";
             const nameStr = f.name || "(unnamed)";
+            // Radio: =<exportValue> tells the model what value to pass.
+            // Dropdown: options:[...] lists valid choices.
+            const exportSuffix = f.exportValue ? `=${f.exportValue}` : "";
+            const optsSuffix = f.options
+              ? ` options:[${f.options.join(", ")}]`
+              : "";
             lines.push(
-              `    ${nameStr}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}`,
+              `    ${nameStr}${exportSuffix}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}${optsSuffix}`,
             );
           }
         }
