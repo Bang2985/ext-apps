@@ -4298,6 +4298,30 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
             .catch(() => {});
         }
         break;
+      case "save_as":
+        // Same await-before-next-poll discipline as get_pages — submit must
+        // be SENT before we re-poll, or it queues behind the 30s long-poll.
+        try {
+          const pdfBytes = await getAnnotatedPdfBytes();
+          const base64 = uint8ArrayToBase64(pdfBytes);
+          await app.callServerTool({
+            name: "submit_save_data",
+            arguments: { requestId: cmd.requestId, data: base64 },
+          });
+          log.info(`save_as: submitted ${pdfBytes.length} bytes`);
+        } catch (err) {
+          log.error("save_as: failed to build bytes — submitting error:", err);
+          await app
+            .callServerTool({
+              name: "submit_save_data",
+              arguments: {
+                requestId: cmd.requestId,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            })
+            .catch(() => {});
+        }
+        break;
       case "file_changed": {
         // Skip our own save_pdf echo: either save is still in flight, or the
         // event's mtime matches what save_pdf just returned.
@@ -4337,10 +4361,15 @@ async function processCommands(commands: PdfCommand[]): Promise<void> {
   }
 
   // Persist after processing batch — but only if anything mutated.
-  // get_pages / file_changed are read-only; writing localStorage and
-  // recomputing the diff for them is wasted work.
+  // get_pages / save_as / file_changed are read-only; writing localStorage
+  // and recomputing the diff for them is wasted work.
   if (
-    commands.some((c) => c.type !== "get_pages" && c.type !== "file_changed")
+    commands.some(
+      (c) =>
+        c.type !== "get_pages" &&
+        c.type !== "save_as" &&
+        c.type !== "file_changed",
+    )
   ) {
     persistAnnotations();
   }
