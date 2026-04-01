@@ -254,7 +254,11 @@ After the model calls `display_pdf`, it receives the `viewUUID` and a descriptio
 
 > **User:** Save the annotated version as `/docs/contract-signed.pdf`.
 >
-> _Model calls `interact` with action `save_as`, path `/docs/contract-signed.pdf`. Fails if the file exists; pass `overwrite: true` to replace. The target path must be under a mounted directory root (same write rules as the in-viewer save button)._
+> _Model calls `interact` with action `save_as`, path `/docs/contract-signed.pdf`. Fails if the file exists; pass `overwrite: true` to replace. The target path must be under a mounted directory root._
+
+> **User:** Save my changes back to the file.
+>
+> _Model calls `interact` with action `save_as`, `overwrite: true` (no `path`). Overwrites the original — same writability gate as the viewer's save button. Only works for local files; remote PDFs need an explicit `path`._
 
 ## Testing
 

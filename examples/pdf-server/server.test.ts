@@ -17,6 +17,7 @@ import {
   cliLocalFiles,
   isWritablePath,
   writeFlags,
+  viewSourcePaths,
   CACHE_INACTIVITY_TIMEOUT_MS,
   CACHE_MAX_LIFETIME_MS,
   CACHE_MAX_PDF_SIZE_BYTES,
@@ -1073,18 +1074,100 @@ describe("interact tool", () => {
     afterEach(() => {
       allowedLocalDirs.clear();
       for (const x of savedDirs) allowedLocalDirs.add(x);
+      viewSourcePaths.clear();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("rejects without `path`", async () => {
+    it("no path, no source tracked → tells model to provide a path", async () => {
+      // Fresh UUID never seen by display_pdf → viewSourcePaths has no entry.
+      // Same condition as a remote (https://) PDF or a stale viewUUID.
       const { server, client } = await connect();
       const r = await client.callTool({
         name: "interact",
-        arguments: { viewUUID: "saveas-nopath", action: "save_as" },
+        arguments: { viewUUID: "saveas-nosource", action: "save_as" },
       });
       expect(r.isError).toBe(true);
-      expect(firstText(r)).toContain("save_as");
-      expect(firstText(r)).toContain("path");
+      expect(firstText(r)).toContain("no local source file");
+      expect(firstText(r)).toContain("Provide an explicit `path`");
+      await client.close();
+      await server.close();
+    });
+
+    it("no path, source tracked, overwrite omitted → asks for confirmation", async () => {
+      const { server, client } = await connect();
+      const source = path.join(tmpDir, "original.pdf");
+      fs.writeFileSync(source, "%PDF-1.4\noriginal");
+      viewSourcePaths.set("saveas-noconfirm", source);
+
+      const r = await client.callTool({
+        name: "interact",
+        arguments: { viewUUID: "saveas-noconfirm", action: "save_as" },
+      });
+      expect(r.isError).toBe(true);
+      expect(firstText(r)).toContain("overwrites the original");
+      expect(firstText(r)).toContain(source);
+      expect(firstText(r)).toContain("overwrite: true");
+      // Nothing enqueued, file untouched
+      expect(fs.readFileSync(source, "utf8")).toBe("%PDF-1.4\noriginal");
+      await client.close();
+      await server.close();
+    });
+
+    it("no path, source not writable → same gate as save button", async () => {
+      const { server, client } = await connect();
+      // Source outside any directory root → isWritablePath false → save button
+      // would be hidden in the viewer. save_as should refuse for the same reason.
+      const outside = path.join(os.tmpdir(), "saveas-outside.pdf");
+      fs.writeFileSync(outside, "x");
+      viewSourcePaths.set("saveas-buttongate", outside);
+
+      try {
+        const r = await client.callTool({
+          name: "interact",
+          arguments: {
+            viewUUID: "saveas-buttongate",
+            action: "save_as",
+            overwrite: true,
+          },
+        });
+        expect(r.isError).toBe(true);
+        expect(firstText(r)).toContain("not writable");
+        expect(firstText(r)).toContain("save button is hidden");
+      } finally {
+        fs.rmSync(outside, { force: true });
+      }
+      await client.close();
+      await server.close();
+    });
+
+    it("no path, overwrite: true → roundtrip overwrites the original", async () => {
+      const { server, client } = await connect();
+      const uuid = "saveas-original";
+      const source = path.join(tmpDir, "report.pdf");
+      fs.writeFileSync(source, "%PDF-1.4\noriginal contents");
+      viewSourcePaths.set(uuid, source);
+
+      const interactPromise = client.callTool({
+        name: "interact",
+        arguments: { viewUUID: uuid, action: "save_as", overwrite: true },
+      });
+
+      const cmds = await poll(client, uuid);
+      expect(cmds).toHaveLength(1);
+      expect(cmds[0].type).toBe("save_as");
+      await client.callTool({
+        name: "submit_save_data",
+        arguments: {
+          requestId: cmds[0].requestId as string,
+          data: Buffer.from("%PDF-1.4\nannotated").toString("base64"),
+        },
+      });
+
+      const r = await interactPromise;
+      expect(r.isError).toBeFalsy();
+      expect(firstText(r)).toContain(source);
+      expect(fs.readFileSync(source, "utf8")).toBe("%PDF-1.4\nannotated");
+
       await client.close();
       await server.close();
     });

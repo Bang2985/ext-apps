@@ -322,6 +322,15 @@ const pollWaiters = new Map<string, () => void>();
  */
 const viewsPolled = new Set<string>();
 
+/**
+ * Resolved local file path per viewer UUID, for save_as without an explicit
+ * target. Only set for local files (remote PDFs have nothing to overwrite).
+ * Populated during display_pdf, cleared by the heartbeat sweep.
+ *
+ * Exported for tests.
+ */
+export const viewSourcePaths = new Map<string, string>();
+
 /** Valid form field names per viewer UUID (populated during display_pdf) */
 const viewFieldNames = new Map<string, Set<string>>();
 
@@ -368,6 +377,7 @@ function pruneStaleQueues(): void {
       viewFieldNames.delete(uuid);
       viewFieldInfo.delete(uuid);
       viewsPolled.delete(uuid);
+      viewSourcePaths.delete(uuid);
       stopFileWatch(uuid);
     }
   }
@@ -1428,6 +1438,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
           : decodeURIComponent(normalized);
         const resolved = path.resolve(localPath);
         debugResolved = resolved;
+        if (!disableInteract) viewSourcePaths.set(uuid, resolved);
         if (isWritablePath(resolved)) {
           try {
             await fs.promises.access(resolved, fs.constants.W_OK);
@@ -1695,7 +1706,7 @@ URL: ${normalized}`,
         .string()
         .optional()
         .describe(
-          "Target file path for save_as. Absolute path or file:// URL.",
+          "Target file path for save_as. Absolute path or file:// URL. Omit to overwrite the original file (requires overwrite: true).",
         ),
       overwrite: z
         .boolean()
@@ -2134,54 +2145,67 @@ URL: ${normalized}`,
           };
         }
         case "save_as": {
-          if (!savePath)
-            return {
-              content: [{ type: "text", text: "save_as requires `path`" }],
-              isError: true,
-            };
-          // Same path normalisation as save_pdf — but NOT validateUrl(),
-          // which fails on non-existent files (the expected case here).
-          const filePath = isFileUrl(savePath)
-            ? fileUrlToPath(savePath)
-            : isLocalPath(savePath)
-              ? decodeURIComponent(savePath)
-              : null;
-          if (!filePath)
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "save_as: path must be an absolute local path or file:// URL",
-                },
-              ],
-              isError: true,
-            };
-          const resolved = path.resolve(filePath);
-          if (!isWritablePath(resolved))
-            return {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    `save_as refused: ${resolved} is not under a mounted ` +
-                    `directory root. Only paths under directory roots ` +
-                    `(or files passed as CLI args) are writable.`,
-                },
-              ],
-              isError: true,
-            };
-          if (!overwrite && fs.existsSync(resolved))
-            return {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    `File already exists: ${resolved}. ` +
-                    `Set overwrite: true to replace it, or choose a different path.`,
-                },
-              ],
-              isError: true,
-            };
+          const saveErr = (text: string) => ({
+            content: [{ type: "text" as const, text }],
+            isError: true as const,
+          });
+
+          let resolved: string;
+          if (savePath) {
+            // Explicit target. Same path normalisation as save_pdf — but NOT
+            // validateUrl(), which fails on non-existent files.
+            const filePath = isFileUrl(savePath)
+              ? fileUrlToPath(savePath)
+              : isLocalPath(savePath)
+                ? decodeURIComponent(savePath)
+                : null;
+            if (!filePath)
+              return saveErr(
+                "save_as: path must be an absolute local path or file:// URL",
+              );
+            resolved = path.resolve(filePath);
+            if (!isWritablePath(resolved))
+              return saveErr(
+                `save_as refused: ${resolved} is not under a mounted ` +
+                  `directory root. Only paths under directory roots ` +
+                  `(or files passed as CLI args) are writable.`,
+              );
+            if (!overwrite && fs.existsSync(resolved))
+              return saveErr(
+                `File already exists: ${resolved}. ` +
+                  `Set overwrite: true to replace it, or choose a different path.`,
+              );
+          } else {
+            // No target → overwrite the original. Same gate as the viewer's
+            // save button: isWritablePath + OS-level W_OK (so we don't try
+            // on read-only mounts). Remote PDFs have no source path stored.
+            const source = viewSourcePaths.get(uuid);
+            if (!source)
+              return saveErr(
+                "save_as: no `path` given and this viewer has no local source " +
+                  "file to overwrite (it's a remote URL, or the viewUUID is " +
+                  "stale/unknown). Provide an explicit `path`.",
+              );
+            if (!overwrite)
+              return saveErr(
+                `save_as: omitting \`path\` overwrites the original ` +
+                  `(${source}). Set overwrite: true to confirm.`,
+              );
+            if (!isWritablePath(source))
+              return saveErr(
+                `save_as refused: ${source} is not writable (the viewer's ` +
+                  `save button is hidden for the same reason).`,
+              );
+            try {
+              await fs.promises.access(source, fs.constants.W_OK);
+            } catch {
+              return saveErr(
+                `save_as refused: ${source} is not writable at the OS level ` +
+                  `(read-only mount or insufficient permissions).`,
+              );
+            }
+            resolved = source;
+          }
 
           const requestId = randomUUID();
           enqueueCommand(uuid, { type: "save_as", requestId });
@@ -2190,15 +2214,9 @@ URL: ${normalized}`,
             await ensureViewerIsPolling(uuid);
             data = await waitForSaveData(requestId, signal);
           } catch (err) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `save_as failed: ${err instanceof Error ? err.message : String(err)}`,
-                },
-              ],
-              isError: true,
-            };
+            return saveErr(
+              `save_as failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
           try {
             const bytes = Buffer.from(data, "base64");
@@ -2212,15 +2230,9 @@ URL: ${normalized}`,
               ],
             };
           } catch (err) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: `save_as: failed to write ${resolved}: ${err instanceof Error ? err.message : String(err)}`,
-                },
-              ],
-              isError: true,
-            };
+            return saveErr(
+              `save_as: failed to write ${resolved}: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
         default:
@@ -2283,7 +2295,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
 
 **FORMS** — fill_form: fill fields with \`fields\` array of {name, value}.
 
-**SAVE** — save_as: write the annotated PDF (annotations + form values) to a new file. Requires \`path\` (absolute path or file://). Set \`overwrite: true\` to replace an existing file; otherwise fails if it exists.`,
+**SAVE** — save_as: write the annotated PDF (annotations + form values) to a file. Pass \`path\` (absolute path or file://) for a new location, or omit \`path\` to overwrite the original. Set \`overwrite: true\` to replace an existing file (always required when omitting \`path\`).`,
         inputSchema: {
           viewUUID: z
             .string()
@@ -2367,7 +2379,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
             .string()
             .optional()
             .describe(
-              "Target file path for save_as. Absolute path or file:// URL.",
+              "Target file path for save_as. Absolute path or file:// URL. Omit to overwrite the original file (requires overwrite: true).",
             ),
           overwrite: z
             .boolean()
