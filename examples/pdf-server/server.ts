@@ -1244,7 +1244,8 @@ export function createServer(options: CreateServerOptions = {}): McpServer {
     "read_pdf_bytes",
     {
       title: "Read PDF Bytes",
-      description: "Read a range of bytes from a PDF (max 512KB per request)",
+      description:
+        "Read a range of bytes from a PDF (max 512KB per request). The model should NOT call this tool directly.",
       inputSchema: {
         url: z.string().describe("PDF URL or local file path"),
         offset: z.number().min(0).default(0).describe("Byte offset"),
@@ -2479,7 +2480,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
       {
         title: "Submit Page Data",
         description:
-          "Submit rendered page data for a get_pages request (used by viewer)",
+          "Submit rendered page data for a get_pages request (used by viewer). The model should NOT call this tool directly.",
         inputSchema: {
           requestId: z
             .string()
@@ -2522,7 +2523,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
       {
         title: "Submit Save Data",
         description:
-          "Submit annotated PDF bytes for a save_as request (used by viewer)",
+          "Submit annotated PDF bytes for a save_as request (used by viewer). The model should NOT call this tool directly.",
         inputSchema: {
           requestId: z
             .string()
@@ -2560,7 +2561,8 @@ Example — add a signature image and a stamp, then screenshot to verify:
       "poll_pdf_commands",
       {
         title: "Poll PDF Commands",
-        description: "Poll for pending commands for a PDF viewer",
+        description:
+          "Poll for pending commands for a PDF viewer. The model should NOT call this tool directly.",
         inputSchema: {
           viewUUID: z.string().describe("The viewUUID of the PDF viewer"),
         },
@@ -2606,7 +2608,8 @@ Example — add a signature image and a stamp, then screenshot to verify:
     "save_pdf",
     {
       title: "Save PDF",
-      description: "Save annotated PDF bytes back to a local file",
+      description:
+        "Save annotated PDF bytes back to a local file. The model should NOT call this tool directly — use interact with action: save_as instead.",
       inputSchema: {
         url: z.string().describe("Original PDF URL or local file path"),
         data: z.string().describe("Base64-encoded PDF bytes"),
