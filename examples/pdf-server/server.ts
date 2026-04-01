@@ -196,6 +196,14 @@ export type { PdfCommand };
 // reject first and return a real error instead of the client cancelling us.
 const GET_PAGES_TIMEOUT_MS = 45_000;
 
+/**
+ * Grace period for the viewer's first poll. If interact() arrives before the
+ * iframe has ever polled, we wait this long for it to show up (iframe mount +
+ * PDF load + startPolling). If no poll comes, the viewer almost certainly
+ * never rendered — failing fast beats a silent 45s hang.
+ */
+const VIEWER_FIRST_POLL_GRACE_MS = 8_000;
+
 interface PageDataEntry {
   page: number;
   text?: string;
@@ -230,6 +238,33 @@ function waitForPageData(
     signal?.addEventListener("abort", onAbort);
     pendingPageRequests.set(requestId, settle);
   });
+}
+
+/**
+ * Wait for the viewer's first poll_pdf_commands call.
+ *
+ * Called before waitForPageData() / waitForSaveData() so a viewer that never
+ * mounted fails in ~8s with a specific message instead of a generic 45s
+ * "Timeout waiting for ..." that gives no hint why.
+ *
+ * Intentionally does NOT touch pollWaiters: piggybacking on that single-slot
+ * Map races with poll_pdf_commands' batch-wait branch (which never cancels the
+ * prior waiter) and with concurrent interact calls (which would overwrite each
+ * other). A plain check loop on viewsPolled is stateless — multiple callers
+ * can wait independently and all observe the same add() when it happens.
+ */
+async function ensureViewerIsPolling(uuid: string): Promise<void> {
+  const deadline = Date.now() + VIEWER_FIRST_POLL_GRACE_MS;
+  while (!viewsPolled.has(uuid)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Viewer never connected for viewUUID ${uuid} (no poll within ${VIEWER_FIRST_POLL_GRACE_MS / 1000}s). ` +
+          `The iframe likely failed to mount — this happens when the conversation ` +
+          `goes idle before the viewer finishes loading. Call display_pdf again to get a fresh viewUUID.`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 // =============================================================================
@@ -278,6 +313,15 @@ const commandQueues = new Map<string, QueueEntry>();
 /** Waiters for long-poll: resolve callback wakes up a blocked poll_pdf_commands */
 const pollWaiters = new Map<string, () => void>();
 
+/**
+ * viewUUIDs that have been polled at least once. A view missing from this set
+ * means the iframe never reached startPolling() — usually because it wasn't
+ * mounted yet, or ontoolresult threw before the poll loop started. Used to
+ * fail fast in get_screenshot/get_text instead of waiting the full 45s for
+ * a viewer that was never there.
+ */
+const viewsPolled = new Set<string>();
+
 /** Valid form field names per viewer UUID (populated during display_pdf) */
 const viewFieldNames = new Map<string, Set<string>>();
 
@@ -323,6 +367,7 @@ function pruneStaleQueues(): void {
       commandQueues.delete(uuid);
       viewFieldNames.delete(uuid);
       viewFieldInfo.delete(uuid);
+      viewsPolled.delete(uuid);
       stopFileWatch(uuid);
     }
   }
@@ -847,6 +892,10 @@ interface FormFieldInfo {
   y: number;
   width: number;
   height: number;
+  /** Radio button export value (buttonValue) — distinguishes widgets that share a field name. */
+  exportValue?: string;
+  /** Dropdown/listbox option values, as seen in the widget's `options` array. */
+  options?: string[];
 }
 
 /**
@@ -899,6 +948,16 @@ async function extractFormFieldInfo(
         // Convert to model coords (top-left origin): modelY = pageHeight - pdfY - height
         const modelY = pageHeight - y2;
 
+        // Choice widgets (combo/listbox) carry `options` as
+        // [{exportValue, displayValue}]. Expose export values — that's
+        // what fill_form needs.
+        let options: string[] | undefined;
+        if (Array.isArray(ann.options) && ann.options.length > 0) {
+          options = ann.options
+            .map((o: { exportValue?: string }) => o?.exportValue)
+            .filter((v: unknown): v is string => typeof v === "string");
+        }
+
         fields.push({
           name: fieldName,
           type: fieldType,
@@ -908,6 +967,12 @@ async function extractFormFieldInfo(
           width: Math.round(width),
           height: Math.round(height),
           ...(ann.alternativeText ? { label: ann.alternativeText } : undefined),
+          // Radio: buttonValue is the per-widget export value — the only
+          // thing distinguishing three `size [Btn]` lines from each other.
+          ...(ann.radioButton && ann.buttonValue != null
+            ? { exportValue: String(ann.buttonValue) }
+            : undefined),
+          ...(options?.length ? { options } : undefined),
         });
       }
     }
@@ -1317,6 +1382,14 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
               y: z.number(),
               width: z.number(),
               height: z.number(),
+              exportValue: z
+                .string()
+                .optional()
+                .describe("Radio button value — pass this to fill_form"),
+              options: z
+                .array(z.string())
+                .optional()
+                .describe("Dropdown/listbox option values"),
             }),
           )
           .optional()
@@ -1488,8 +1561,14 @@ URL: ${normalized}`,
           for (const f of fields) {
             const label = f.label ? ` "${f.label}"` : "";
             const nameStr = f.name || "(unnamed)";
+            // Radio: =<exportValue> tells the model what value to pass.
+            // Dropdown: options:[...] lists valid choices.
+            const exportSuffix = f.exportValue ? `=${f.exportValue}` : "";
+            const optsSuffix = f.options
+              ? ` options:[${f.options.join(", ")}]`
+              : "";
             lines.push(
-              `    ${nameStr}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}`,
+              `    ${nameStr}${exportSuffix}${label} [${f.type}] at (${f.x},${f.y}) ${f.width}×${f.height}${optsSuffix}`,
             );
           }
         }
@@ -1973,6 +2052,7 @@ URL: ${normalized}`,
 
           let pageData: PageDataEntry[];
           try {
+            await ensureViewerIsPolling(uuid);
             pageData = await waitForPageData(requestId, signal);
           } catch (err) {
             return {
@@ -2021,6 +2101,7 @@ URL: ${normalized}`,
 
           let pageData: PageDataEntry[];
           try {
+            await ensureViewerIsPolling(uuid);
             pageData = await waitForPageData(requestId, signal);
           } catch (err) {
             return {
@@ -2105,6 +2186,7 @@ URL: ${normalized}`,
           enqueueCommand(uuid, { type: "save_as", requestId });
           let data: string;
           try {
+            await ensureViewerIsPolling(uuid);
             data = await waitForSaveData(requestId, signal);
           } catch (err) {
             return {
@@ -2356,7 +2438,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
 
         // Process commands sequentially, collecting all content parts
         const allContent: ContentPart[] = [];
-        let hasError = false;
+        let failedAt = -1;
 
         for (let i = 0; i < commandList.length; i++) {
           const result = await processInteractCommand(
@@ -2365,15 +2447,27 @@ Example — add a signature image and a stamp, then screenshot to verify:
             extra.signal,
           );
           if (result.isError) {
-            hasError = true;
+            // Error content first. Some hosts flatten isError results to
+            // content[0].text — if we push the error after prior successes,
+            // the user sees "Queued: Filled 7 fields" with isError:true and
+            // the actual failure is silently dropped.
+            allContent.unshift(...result.content);
+            failedAt = i;
+            break;
           }
           allContent.push(...result.content);
-          if (hasError) break; // Stop on first error
+        }
+
+        if (failedAt >= 0 && commandList.length > 1) {
+          allContent.unshift({
+            type: "text",
+            text: `Batch failed at step ${failedAt + 1}/${commandList.length} (${commandList[failedAt].action}):`,
+          });
         }
 
         return {
           content: allContent,
-          ...(hasError ? { isError: true } : {}),
+          ...(failedAt >= 0 ? { isError: true } : {}),
         };
       },
     );
@@ -2473,6 +2567,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
         _meta: { ui: { visibility: ["app"] } },
       },
       async ({ viewUUID: uuid }): Promise<CallToolResult> => {
+        viewsPolled.add(uuid);
         // If commands are already queued, wait briefly to let more accumulate
         if (commandQueues.has(uuid)) {
           await new Promise((r) => setTimeout(r, POLL_BATCH_WAIT_MS));
