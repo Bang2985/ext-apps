@@ -232,6 +232,41 @@ function waitForPageData(
   });
 }
 
+// =============================================================================
+// Pending save_as Requests (request-response bridge via client)
+// =============================================================================
+//
+// Same shape as get_pages: model's interact call blocks while the viewer
+// builds annotated bytes and posts them back. Reuses GET_PAGES_TIMEOUT_MS
+// (45s) — generous because pdf-lib reflow on a large doc can take seconds.
+
+const pendingSaveRequests = new Map<string, (v: string | Error) => void>();
+
+/**
+ * Wait for the viewer to build annotated PDF bytes and submit them as base64.
+ * Rejects on timeout, abort, or when the viewer reports an error.
+ */
+function waitForSaveData(
+  requestId: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const settle = (v: string | Error) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      pendingSaveRequests.delete(requestId);
+      v instanceof Error ? reject(v) : resolve(v);
+    };
+    const onAbort = () => settle(new Error("interact request cancelled"));
+    const timer = setTimeout(
+      () => settle(new Error("Timeout waiting for PDF bytes from viewer")),
+      GET_PAGES_TIMEOUT_MS,
+    );
+    signal?.addEventListener("abort", onAbort);
+    pendingSaveRequests.set(requestId, settle);
+  });
+}
+
 interface QueueEntry {
   commands: PdfCommand[];
   /** Timestamp of the most recent enqueue or dequeue */
@@ -1402,7 +1437,7 @@ Set \`elicit_form_inputs\` to true to prompt the user to fill form fields before
             ? `Displaying PDF: ${normalized}`
             : `PDF opened. viewUUID: ${uuid}
 
-→ To annotate, sign, stamp, fill forms, navigate, or extract: call \`interact\` with this viewUUID.
+→ To annotate, sign, stamp, fill forms, navigate, extract, or save to a file: call \`interact\` with this viewUUID.
 → DO NOT call display_pdf again — that spawns a separate viewer with a different viewUUID; your interact calls would target the new empty one, not the one the user is looking at.
 
 URL: ${normalized}`,
@@ -1521,6 +1556,7 @@ URL: ${normalized}`,
           "fill_form",
           "get_text",
           "get_screenshot",
+          "save_as",
         ])
         .describe("Action to perform"),
       page: z
@@ -1575,6 +1611,16 @@ URL: ${normalized}`,
         .describe(
           "Page ranges for get_text. Each has optional start/end. [{start:1,end:5}], [{}] = all pages. Max 20 pages.",
         ),
+      path: z
+        .string()
+        .optional()
+        .describe(
+          "Target file path for save_as. Absolute path or file:// URL.",
+        ),
+      overwrite: z
+        .boolean()
+        .optional()
+        .describe("Overwrite if file exists (for save_as). Default false."),
     });
 
     type InteractCommand = z.infer<typeof InteractCommandSchema>;
@@ -1714,6 +1760,8 @@ URL: ${normalized}`,
         content,
         fields,
         intervals,
+        path: savePath,
+        overwrite,
       } = cmd;
 
       let description: string;
@@ -2003,6 +2051,95 @@ URL: ${normalized}`,
             isError: true,
           };
         }
+        case "save_as": {
+          if (!savePath)
+            return {
+              content: [{ type: "text", text: "save_as requires `path`" }],
+              isError: true,
+            };
+          // Same path normalisation as save_pdf — but NOT validateUrl(),
+          // which fails on non-existent files (the expected case here).
+          const filePath = isFileUrl(savePath)
+            ? fileUrlToPath(savePath)
+            : isLocalPath(savePath)
+              ? decodeURIComponent(savePath)
+              : null;
+          if (!filePath)
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: "save_as: path must be an absolute local path or file:// URL",
+                },
+              ],
+              isError: true,
+            };
+          const resolved = path.resolve(filePath);
+          if (!isWritablePath(resolved))
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `save_as refused: ${resolved} is not under a mounted ` +
+                    `directory root. Only paths under directory roots ` +
+                    `(or files passed as CLI args) are writable.`,
+                },
+              ],
+              isError: true,
+            };
+          if (!overwrite && fs.existsSync(resolved))
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `File already exists: ${resolved}. ` +
+                    `Set overwrite: true to replace it, or choose a different path.`,
+                },
+              ],
+              isError: true,
+            };
+
+          const requestId = randomUUID();
+          enqueueCommand(uuid, { type: "save_as", requestId });
+          let data: string;
+          try {
+            data = await waitForSaveData(requestId, signal);
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `save_as failed: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          try {
+            const bytes = Buffer.from(data, "base64");
+            await fs.promises.writeFile(resolved, bytes);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Saved annotated PDF to ${resolved} (${bytes.length} bytes)`,
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `save_as: failed to write ${resolved}: ${err instanceof Error ? err.message : String(err)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
         default:
           return {
             content: [{ type: "text", text: `Unknown action: ${action}` }],
@@ -2061,7 +2198,9 @@ Example — add a signature image and a stamp, then screenshot to verify:
 • get_text: extract text from pages. Optional \`page\` for single page, or \`intervals\` for ranges [{start?,end?}]. Max 20 pages.
 • get_screenshot: capture a single page as PNG image. Requires \`page\`.
 
-**FORMS** — fill_form: fill fields with \`fields\` array of {name, value}.`,
+**FORMS** — fill_form: fill fields with \`fields\` array of {name, value}.
+
+**SAVE** — save_as: write the annotated PDF (annotations + form values) to a new file. Requires \`path\` (absolute path or file://). Set \`overwrite: true\` to replace an existing file; otherwise fails if it exists.`,
         inputSchema: {
           viewUUID: z
             .string()
@@ -2083,6 +2222,7 @@ Example — add a signature image and a stamp, then screenshot to verify:
               "fill_form",
               "get_text",
               "get_screenshot",
+              "save_as",
             ])
             .optional()
             .describe(
@@ -2140,6 +2280,16 @@ Example — add a signature image and a stamp, then screenshot to verify:
             .describe(
               "Page ranges for get_text. Each has optional start/end. [{start:1,end:5}], [{}] = all pages. Max 20 pages.",
             ),
+          path: z
+            .string()
+            .optional()
+            .describe(
+              "Target file path for save_as. Absolute path or file:// URL.",
+            ),
+          overwrite: z
+            .boolean()
+            .optional()
+            .describe("Overwrite if file exists (for save_as). Default false."),
           // Batch mode
           commands: z
             .array(InteractCommandSchema)
@@ -2163,6 +2313,8 @@ Example — add a signature image and a stamp, then screenshot to verify:
           content,
           fields,
           intervals,
+          path: savePath,
+          overwrite,
           commands,
         },
         extra,
@@ -2184,6 +2336,8 @@ Example — add a signature image and a stamp, then screenshot to verify:
                   content,
                   fields,
                   intervals,
+                  path: savePath,
+                  overwrite,
                 },
               ]
             : [];
@@ -2264,6 +2418,45 @@ Example — add a signature image and a stamp, then screenshot to verify:
           ],
           isError: true,
         };
+      },
+    );
+
+    // Tool: submit_save_data (app-only) - Viewer submits annotated PDF bytes
+    registerAppTool(
+      server,
+      "submit_save_data",
+      {
+        title: "Submit Save Data",
+        description:
+          "Submit annotated PDF bytes for a save_as request (used by viewer)",
+        inputSchema: {
+          requestId: z
+            .string()
+            .describe("The request ID from the save_as command"),
+          data: z.string().optional().describe("Base64-encoded PDF bytes"),
+          error: z
+            .string()
+            .optional()
+            .describe("Error message if the viewer failed to build bytes"),
+        },
+        _meta: { ui: { visibility: ["app"] } },
+      },
+      async ({ requestId, data, error }): Promise<CallToolResult> => {
+        const settle = pendingSaveRequests.get(requestId);
+        if (!settle) {
+          return {
+            content: [
+              { type: "text", text: `No pending request for ${requestId}` },
+            ],
+            isError: true,
+          };
+        }
+        if (error || !data) {
+          settle(new Error(error || "Viewer returned no data"));
+        } else {
+          settle(data);
+        }
+        return { content: [{ type: "text", text: "Submitted" }] };
       },
     );
 
