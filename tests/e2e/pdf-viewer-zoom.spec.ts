@@ -55,11 +55,9 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
   test("entering fullscreen drops the inline shrink-to-fit scale", async ({
     page,
   }) => {
-    // Start NARROW so the initial fit-to-width lands below 100%. basic-host
-    // only sends containerDimensions at init (not on window resize), so we
-    // can't load wide and shrink — the viewer would never hear about it.
-    // The default arxiv PDF is ~612pt wide; a 500px iframe forces a fit
-    // scale around 60-70%.
+    // Start narrow so the initial fit-to-width lands below 100%.
+    // The default arxiv PDF is ~612pt wide; a 500px iframe forces a
+    // fit scale around 60-70%.
     await page.setViewportSize({ width: 500, height: 800 });
     await loadPdfServer(page);
     await waitForPdfRender(page);
