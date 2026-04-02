@@ -66,10 +66,11 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
     const inlineZoom = await readZoomPercent(page);
     expect(inlineZoom).toBeLessThan(100);
 
-    // Widen so the fullscreen iframe is bigger than the natural page width,
-    // then enter fullscreen. Fullscreen fit fills the width (cap = ZOOM_MAX),
-    // so on a 1400px iframe with a ~612pt page we expect well over 100%.
-    await page.setViewportSize({ width: 1400, height: 800 });
+    // Widen + give plenty of height, then enter fullscreen. Fullscreen uses
+    // fit-to-PAGE (whole page visible), so the resulting zoom is whichever
+    // axis is tighter. We just assert it's higher than the cramped inline
+    // value AND that the page actually fits without scrolling.
+    await page.setViewportSize({ width: 1400, height: 1000 });
     await app.locator("#fullscreen-btn").click();
     await expect(app.locator(".main.fullscreen")).toBeVisible({
       timeout: 5000,
@@ -77,7 +78,17 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
 
     await expect
       .poll(() => readZoomPercent(page), { timeout: 5000 })
-      .toBeGreaterThan(inlineZoom + 50);
+      .toBeGreaterThan(inlineZoom);
+
+    // Whole page visible → no scroll inside the canvas-container.
+    const overflows = await app
+      .locator(".canvas-container")
+      .evaluate(
+        (el: HTMLElement) =>
+          el.scrollHeight > el.clientHeight + 2 ||
+          el.scrollWidth > el.clientWidth + 2,
+      );
+    expect(overflows).toBe(false);
   });
 
   test("trackpad pinch (wheel + ctrlKey) zooms in fullscreen", async ({
@@ -93,10 +104,8 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
     await expect(app.locator(".main.fullscreen")).toBeVisible({
       timeout: 5000,
     });
-    // Let the entering-fullscreen refit settle (fills width, so >100%).
-    await expect
-      .poll(() => readZoomPercent(page), { timeout: 5000 })
-      .toBeGreaterThan(100);
+    // Let the entering-fullscreen fit-to-page refit settle.
+    await page.waitForTimeout(500);
     const before = await readZoomPercent(page);
 
     // Dispatch a synthetic trackpad pinch-OUT on the canvas-container.

@@ -259,42 +259,59 @@ let currentDisplayMode: "inline" | "fullscreen" = "inline";
 let userHasZoomed = false;
 
 /**
- * Compute a scale that fits the PDF page width to the available container
- * width. Returns null only when the container hasn't laid out yet.
+ * Compute the scale that best fits the PDF page to the container.
+ * Returns null only when the container hasn't laid out yet.
  *
- * Inline mode caps at 1.0 — we shrink to fit a narrow chat column but don't
- * blow up past natural size (the iframe sizes itself to the page via
- * sendSizeChanged, so growing past 1.0 would just make the iframe huge).
+ * Inline mode: fit-to-WIDTH capped at 1.0. We shrink to fit a narrow chat
+ * column but don't blow up past natural size — the iframe sizes itself to
+ * the page via sendSizeChanged, so growing past 1.0 would just make the
+ * iframe huge.
  *
- * Fullscreen mode caps at ZOOM_MAX — the iframe is fixed to the viewport and
- * a 612pt page at 1.0 leaves acres of empty space on a wide screen.
- * "Fit" here means "fill the width", not "don't overflow".
+ * Fullscreen mode: fit-to-PAGE capped at ZOOM_MAX. The whole page is visible
+ * without scrolling (min of width-fit and height-fit). On a wide screen this
+ * typically lands well above 1.0; on a phone in portrait, width is the
+ * tighter constraint and it degrades to fit-to-width.
  */
-async function computeFitToWidthScale(): Promise<number | null> {
+async function computeFitScale(): Promise<number | null> {
   if (!pdfDocument) return null;
 
   try {
     const page = await pdfDocument.getPage(currentPage);
     const naturalViewport = page.getViewport({ scale: 1.0 });
     const pageWidth = naturalViewport.width;
+    const pageHeight = naturalViewport.height;
 
     const container = canvasContainerEl as HTMLElement;
     const containerStyle = getComputedStyle(container);
-    const paddingLeft = parseFloat(containerStyle.paddingLeft);
-    const paddingRight = parseFloat(containerStyle.paddingRight);
-    const availableWidth = container.clientWidth - paddingLeft - paddingRight;
+    const padX =
+      parseFloat(containerStyle.paddingLeft) +
+      parseFloat(containerStyle.paddingRight);
+    const padY =
+      parseFloat(containerStyle.paddingTop) +
+      parseFloat(containerStyle.paddingBottom);
+    const availableWidth = container.clientWidth - padX;
+    const availableHeight = container.clientHeight - padY;
 
     if (availableWidth <= 0 || pageWidth <= 0) return null;
 
-    const cap = currentDisplayMode === "fullscreen" ? ZOOM_MAX : 1.0;
-    return Math.min(cap, availableWidth / pageWidth);
+    const widthFit = availableWidth / pageWidth;
+    if (currentDisplayMode !== "fullscreen") {
+      return Math.min(1.0, widthFit);
+    }
+    // Fullscreen: fit the WHOLE page. If height isn't measurable yet
+    // (early layout) fall back to width-fit.
+    const heightFit =
+      availableHeight > 0 && pageHeight > 0
+        ? availableHeight / pageHeight
+        : widthFit;
+    return Math.min(ZOOM_MAX, widthFit, heightFit);
   } catch {
     return null;
   }
 }
 
 /**
- * Re-apply fit-to-width if the user hasn't taken over zoom. Runs on
+ * Re-apply the auto-fit scale if the user hasn't taken over zoom. Runs on
  * container resize (ResizeObserver) and display-mode transitions.
  *
  * The ResizeObserver path is the load-bearing one. Hosts disagree on
@@ -306,27 +323,32 @@ async function computeFitToWidthScale(): Promise<number | null> {
  * size, so clientWidth is fresh. The hostContextChanged hooks are kept
  * as a fast path / belt-and-suspenders.
  */
-async function refitToWidth(): Promise<void> {
+async function refitScale(): Promise<void> {
   if (!pdfDocument || userHasZoomed) return;
-  const fitScale = await computeFitToWidthScale();
+  const fitScale = await computeFitScale();
   if (fitScale !== null && Math.abs(fitScale - scale) > 0.01) {
     scale = fitScale;
-    log.info("Refit-to-width scale:", scale);
+    log.info("Refit scale:", scale);
     renderPage();
   }
 }
 
-// Refit when the container actually GROWS — not on every change. In inline
-// mode renderPage() → requestFitToContent() → host resizes iframe to the
-// (smaller) page width, which would re-trigger the observer and walk the
-// scale down to ZOOM_MIN. Growth-only covers inline→fullscreen (the case
-// that motivated this) and window-widen, without the feedback loop.
-let lastContainerWidth = 0;
-const containerResizeObserver = new ResizeObserver((entries) => {
-  const w = entries[0]?.contentRect.width ?? 0;
-  const grew = w > lastContainerWidth + 1;
-  lastContainerWidth = w;
-  if (grew) refitToWidth();
+// Refit when the container actually changes size. In INLINE mode this is
+// gated to width-GROWTH only — renderPage() → requestFitToContent() → host
+// resizes iframe to the (smaller) page width would otherwise re-trigger the
+// observer and walk the scale down to ZOOM_MIN. In FULLSCREEN
+// requestFitToContent early-returns so there's no loop, and fit-to-page
+// needs height changes too (rotation, browser chrome on mobile).
+let lastContainerW = 0;
+let lastContainerH = 0;
+const containerResizeObserver = new ResizeObserver(([entry]) => {
+  const { width: w, height: h } = entry.contentRect;
+  const grewW = w > lastContainerW + 1;
+  const changed =
+    Math.abs(w - lastContainerW) > 1 || Math.abs(h - lastContainerH) > 1;
+  lastContainerW = w;
+  lastContainerH = h;
+  if (currentDisplayMode === "fullscreen" ? changed : grewW) refitScale();
 });
 containerResizeObserver.observe(canvasContainerEl as HTMLElement);
 
@@ -3306,9 +3328,8 @@ function zoomOut() {
 function resetZoom() {
   userHasZoomed = false;
   // Re-fit rather than blindly snapping to 1.0 — in a narrow inline iframe
-  // 1.0 overflows, in fullscreen 1.0 is what we want. computeFitToWidthScale
-  // returns min(1.0, fit) so this does the right thing in both.
-  computeFitToWidthScale().then((fitScale) => {
+  // 1.0 overflows, and in fullscreen 1.0 leaves the page floating in space.
+  computeFitScale().then((fitScale) => {
     scale = fitScale ?? 1.0;
     renderPage().then(scrollSelectionIntoView);
   });
@@ -4299,10 +4320,10 @@ app.ontoolresult = async (result: CallToolResult) => {
     // and here makes the empty viewer visible. The annotation/form scans
     // below are O(numPages) and do NOT block the canvas (page.render only
     // needs canvasContext+viewport), so they run after.
-    const fitScale = await computeFitToWidthScale();
+    const fitScale = await computeFitScale();
     if (fitScale !== null) {
       scale = fitScale;
-      log.info("Fit-to-width scale:", scale);
+      log.info("Initial fit scale:", scale);
     }
     await renderPage();
 
@@ -4677,13 +4698,13 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
       setAnnotationPanelOpen(true);
     }
     if (wasFullscreen !== isFullscreen) {
-      // Mode changed → refit. computeFitToWidthScale reads displayMode, so
+      // Mode changed → refit. computeFitScale reads displayMode, so
       // this scales UP to fill on enter and back DOWN to ≤1.0 on exit.
-      // refitToWidth → renderPage → requestFitToContent handles the
+      // refitScale → renderPage → requestFitToContent handles the
       // host-resize on exit. If userHasZoomed, refit no-ops; on exit fall
       // back to requestFitToContent so the iframe still shrinks to whatever
       // scale the user left it at.
-      void refitToWidth().then(() => {
+      void refitScale().then(() => {
         if (!isFullscreen && userHasZoomed) requestFitToContent();
       });
     }
@@ -4695,7 +4716,7 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
   // refits on inline→fullscreen so this is for everything else.
   if (ctx.containerDimensions) {
     log.info("Container dimensions changed:", ctx.containerDimensions);
-    refitToWidth();
+    refitScale();
   }
 }
 
