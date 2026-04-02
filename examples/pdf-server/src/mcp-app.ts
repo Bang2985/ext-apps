@@ -3340,9 +3340,13 @@ function zoomIn() {
   renderPage().then(scrollSelectionIntoView);
 }
 
-function zoomOut() {
+async function zoomOut() {
   userHasZoomed = true;
-  scale = Math.max(scale - 0.25, ZOOM_MIN);
+  // Fullscreen floor is fit-to-page (anything smaller is dead margin).
+  const fit =
+    currentDisplayMode === "fullscreen" ? await computeFitScale() : null;
+  const floor = fit !== null ? Math.max(ZOOM_MIN, fit) : ZOOM_MIN;
+  scale = Math.max(scale - 0.25, floor);
   renderPage().then(scrollSelectionIntoView);
 }
 
@@ -3802,7 +3806,14 @@ function beginPinch() {
 
 function updatePinch(nextScale: number) {
   previewScaleRaw = nextScale;
-  previewScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextScale));
+  // In fullscreen, never shrink below fit — fit-to-page is "fully visible",
+  // so anything smaller just adds dead margin. previewScaleRaw stays
+  // unclamped so the exit-to-inline check in commitPinch() still fires.
+  const floor =
+    currentDisplayMode === "fullscreen" && fitScaleAtPinchStart !== null
+      ? Math.max(ZOOM_MIN, fitScaleAtPinchStart)
+      : ZOOM_MIN;
+  previewScale = Math.min(ZOOM_MAX, Math.max(floor, nextScale));
   // Transform is RELATIVE to the rendered canvas (which sits at
   // pinchStartScale), so a previewScale equal to pinchStartScale → ratio 1.
   pageWrapperEl.style.transform = `scale(${previewScale / pinchStartScale})`;
