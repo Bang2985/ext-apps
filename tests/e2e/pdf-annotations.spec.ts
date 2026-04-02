@@ -314,3 +314,71 @@ test.describe("PDF Server - Annotations", () => {
     );
   });
 });
+
+/**
+ * Read the most recent interact result text from the basic-host UI.
+ * Expands the latest "📤 Tool Result" panel and returns the <pre> text.
+ */
+async function readLastToolResult(page: Page): Promise<string> {
+  const panel = page.locator('text="📤 Tool Result"').last();
+  await expect(panel).toBeVisible({ timeout: 30000 });
+  await panel.click();
+  const pre = page.locator("pre").last();
+  await expect(pre).toBeVisible({ timeout: 5000 });
+  return (await pre.textContent()) ?? "";
+}
+
+test.describe("PDF Server - get_viewer_state", () => {
+  test("returns page/zoom/mode and selection:null when nothing is selected", async ({
+    page,
+  }) => {
+    await loadPdfServer(page);
+    await waitForPdfCanvas(page);
+
+    const viewUUID = await extractViewUUID(page);
+
+    await callInteract(page, { viewUUID, action: "get_viewer_state" });
+    const result = await readLastToolResult(page);
+
+    // Basic-host renders text content blocks as JSON-ish; the viewer's reply
+    // is a JSON object — assert key fields without being brittle on
+    // surrounding chrome.
+    expect(result).toMatch(/"currentPage"\s*:\s*1/);
+    expect(result).toMatch(/"pageCount"\s*:\s*\d+/);
+    expect(result).toMatch(/"zoom"\s*:\s*\d+/);
+    expect(result).toMatch(/"displayMode"\s*:\s*"inline"/);
+    expect(result).toMatch(/"selection"\s*:\s*null/);
+  });
+
+  test("returns selected text and bounding rect when text-layer text is selected", async ({
+    page,
+  }) => {
+    await loadPdfServer(page);
+    await waitForPdfCanvas(page);
+
+    const viewUUID = await extractViewUUID(page);
+    const app = getAppFrame(page);
+
+    // Programmatically select the contents of the first text-layer span.
+    const selectedText = await app
+      .locator("#text-layer span")
+      .first()
+      .evaluate((span) => {
+        const range = span.ownerDocument.createRange();
+        range.selectNodeContents(span);
+        const sel = span.ownerDocument.defaultView!.getSelection()!;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return sel.toString().replace(/\s+/g, " ").trim();
+      });
+    expect(selectedText.length).toBeGreaterThan(0);
+
+    await callInteract(page, { viewUUID, action: "get_viewer_state" });
+    const result = await readLastToolResult(page);
+
+    expect(result).toMatch(/"selection"\s*:\s*\{/);
+    expect(result).toContain(JSON.stringify(selectedText).slice(1, -1));
+    expect(result).toMatch(/"boundingRect"\s*:\s*\{/);
+    expect(result).toMatch(/"currentPage"\s*:\s*1/);
+  });
+});
