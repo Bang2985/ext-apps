@@ -67,17 +67,17 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
     expect(inlineZoom).toBeLessThan(100);
 
     // Widen so the fullscreen iframe is bigger than the natural page width,
-    // then enter fullscreen. The viewer's displayMode handler calls
-    // refitToWidth() on inline→fullscreen and should land at 100%.
+    // then enter fullscreen. Fullscreen fit fills the width (cap = ZOOM_MAX),
+    // so on a 1400px iframe with a ~612pt page we expect well over 100%.
     await page.setViewportSize({ width: 1400, height: 800 });
     await app.locator("#fullscreen-btn").click();
     await expect(app.locator(".main.fullscreen")).toBeVisible({
       timeout: 5000,
     });
 
-    // Before the fix, computeFitToWidthScale returned null when the page
-    // already fit at 1.0 → the cramped inline scale stuck.
-    await expect.poll(() => readZoomPercent(page), { timeout: 5000 }).toBe(100);
+    await expect
+      .poll(() => readZoomPercent(page), { timeout: 5000 })
+      .toBeGreaterThan(inlineZoom + 50);
   });
 
   test("trackpad pinch (wheel + ctrlKey) zooms in fullscreen", async ({
@@ -93,17 +93,20 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
     await expect(app.locator(".main.fullscreen")).toBeVisible({
       timeout: 5000,
     });
-    // Let the entering-fullscreen refit settle.
-    await expect.poll(() => readZoomPercent(page), { timeout: 5000 }).toBe(100);
+    // Let the entering-fullscreen refit settle (fills width, so >100%).
+    await expect
+      .poll(() => readZoomPercent(page), { timeout: 5000 })
+      .toBeGreaterThan(100);
+    const before = await readZoomPercent(page);
 
-    // Dispatch a synthetic trackpad pinch on the canvas-container.
+    // Dispatch a synthetic trackpad pinch-OUT on the canvas-container.
     // ctrlKey:true is what Chrome/FF/Edge/Safari emit for trackpad pinch;
-    // deltaY < 0 = zoom in. We can't use page.mouse.wheel — it doesn't
-    // expose ctrlKey — so dispatch directly inside the iframe.
+    // deltaY > 0 = zoom out. We pinch out so we don't hit ZOOM_MAX.
+    // Can't use page.mouse.wheel — it doesn't expose ctrlKey.
     await app.locator(".canvas-container").evaluate((el) => {
       el.dispatchEvent(
         new WheelEvent("wheel", {
-          deltaY: -50,
+          deltaY: 50,
           ctrlKey: true,
           bubbles: true,
           cancelable: true,
@@ -112,10 +115,10 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
     });
 
     // The viewer applies a CSS transform live, then commits to a real
-    // renderPage() after a 150ms settle timer. Poll for the committed zoom.
+    // renderPage() after a 150ms settle timer. exp(-50/100) ≈ 0.607.
     await expect
       .poll(() => readZoomPercent(page), { timeout: 5000 })
-      .toBeGreaterThan(100);
+      .toBeLessThan(before * 0.8);
 
     // The CSS transform should be cleared once committed (so the canvas
     // isn't double-scaled — the new render IS the new scale).
