@@ -4812,21 +4812,19 @@ function handleHostContextChanged(ctx: McpUiHostContext) {
       setAnnotationPanelOpen(true);
     }
     if (!isFullscreen) {
+      // Fullscreen zoom level is meaningless inline — always refit on exit,
+      // however it was triggered (pinch, button, host Escape/×).
+      userHasZoomed = false;
       // The iframe shrink lands after this handler; let the ResizeObserver
       // do one refit on that shrink (its inline branch normally ignores
       // shrinks to avoid a requestFitToContent feedback loop).
       forceNextResizeRefit = true;
     }
     if (wasFullscreen !== isFullscreen) {
-      // Mode changed → refit. computeFitScale reads displayMode, so
-      // this scales UP to fill on enter and back DOWN to ≤1.0 on exit.
-      // refitScale → renderPage → requestFitToContent handles the
-      // host-resize on exit. If userHasZoomed, refit no-ops; on exit fall
-      // back to requestFitToContent so the iframe still shrinks to whatever
-      // scale the user left it at.
-      void refitScale().then(() => {
-        if (!isFullscreen && userHasZoomed) requestFitToContent();
-      });
+      // Fast-path refit (computeFitScale reads displayMode). The iframe may
+      // not have its final size yet — the ResizeObserver one-shot above
+      // covers the inline-shrink case once it does.
+      void refitScale();
     }
     updateFullscreenButton();
   }
