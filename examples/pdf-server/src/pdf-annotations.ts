@@ -1009,33 +1009,28 @@ export function importPdfjsAnnotation(
     case "highlight":
     case "underline":
     case "strikethrough": {
-      // PDF.js provides quadPoints as array of arrays [[x1,y1,x2,y2,...], ...]
-      // or rect as [x1,y1,x2,y2]
-      let rects: Rect[];
-      if (ann.quadPoints && ann.quadPoints.length > 0) {
-        rects = [];
-        for (const qp of ann.quadPoints) {
-          // Each quadPoint is [x1,y1,x2,y2,x3,y3,x4,y4]
-          // We need the bounding box
-          if (qp.length >= 8) {
-            const xs = [qp[0], qp[2], qp[4], qp[6]];
-            const ys = [qp[1], qp[3], qp[5], qp[7]];
-            const minX = Math.min(...xs);
-            const minY = Math.min(...ys);
-            const maxX = Math.max(...xs);
-            const maxY = Math.max(...ys);
-            rects.push({
-              x: minX,
-              y: minY,
-              width: maxX - minX,
-              height: maxY - minY,
-            });
-          }
+      // pdf.js emits quadPoints as a FLAT Float32Array [x1,y1,...,x4,y4, …]
+      // (8 numbers per quad), NOT as nested arrays. Iterating it yields
+      // numbers, so the old `for (const qp of …) if (qp.length>=8)` never
+      // matched and every quad-based annotation was dropped (#506).
+      const rects: Rect[] = [];
+      const qp = ann.quadPoints as ArrayLike<number> | undefined;
+      if (qp && qp.length >= 8) {
+        for (let i = 0; i + 8 <= qp.length; i += 8) {
+          const xs = [qp[i], qp[i + 2], qp[i + 4], qp[i + 6]];
+          const ys = [qp[i + 1], qp[i + 3], qp[i + 5], qp[i + 7]];
+          const minX = Math.min(...xs);
+          const minY = Math.min(...ys);
+          rects.push({
+            x: minX,
+            y: minY,
+            width: Math.max(...xs) - minX,
+            height: Math.max(...ys) - minY,
+          });
         }
-      } else if (ann.rect) {
-        rects = [pdfjsRectToRect(ann.rect)];
-      } else {
-        return null;
+      }
+      if (rects.length === 0 && ann.rect) {
+        rects.push(pdfjsRectToRect(ann.rect));
       }
       if (rects.length === 0) return null;
 
