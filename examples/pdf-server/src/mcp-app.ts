@@ -3246,6 +3246,13 @@ async function renderPage() {
       canvasContext: ctx,
       viewport,
       annotationCanvasMap,
+      // isEditing forces hasOwnCanvas=true for stamps regardless of /F
+      // NoRotate (StampAnnotation.mustBeViewedWhenEditing in pdf.worker).
+      // Without this, stamps without NoRotate composite onto the main canvas
+      // and deleting the "imported" overlay leaves an unclickable pixel
+      // behind. Other markup types still gate on noRotate; for those the
+      // overlay stays a transparent click-box (delete is UI-only until save).
+      isEditing: true,
     });
     currentRenderTask = renderTask;
 
