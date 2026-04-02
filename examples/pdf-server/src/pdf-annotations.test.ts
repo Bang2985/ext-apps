@@ -1105,6 +1105,34 @@ describe("buildAnnotatedPdfBytes", () => {
       const form = (await PDFDocument.load(out)).getForm();
       expect(form.getTextField("name").getText()).toBe("kept");
     });
+
+    it("a field that throws on write does not abort subsequent fields", async () => {
+      // Regression for #577: the per-field try/catch was dropped, so the
+      // first throwing field bubbled to the outer catch and silently dropped
+      // every field after it. setText() throws when value exceeds maxLength.
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      const form = doc.getForm();
+      const limited = form.createTextField("limited");
+      limited.setMaxLength(2);
+      limited.addToPage(page, { x: 10, y: 700 });
+      form.createTextField("after").addToPage(page, { x: 10, y: 660 });
+      const fixture = await doc.save();
+
+      const out = await buildAnnotatedPdfBytes(
+        fixture,
+        [],
+        new Map<string, string | boolean>([
+          ["limited", "way too long"], // throws
+          ["after", "kept"],
+        ]),
+      );
+
+      const saved = (await PDFDocument.load(out)).getForm();
+      expect(saved.getTextField("after").getText()).toBe("kept");
+      // The throwing field is left at whatever pdf-lib could do with it —
+      // we only assert it didn't poison "after".
+    });
   });
 });
 

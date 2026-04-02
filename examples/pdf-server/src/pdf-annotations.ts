@@ -22,6 +22,7 @@ import {
   PDFCheckBox,
   PDFDropdown,
   PDFRadioGroup,
+  type PDFForm,
 } from "pdf-lib";
 
 // =============================================================================
@@ -815,44 +816,58 @@ export async function buildAnnotatedPdfBytes(
   await addAnnotationDicts(pdfDoc, annotations);
 
   // Apply form fills. Dispatch on actual field type — getTextField(name) throws
-  // for dropdowns/radios, so the old try/catch silently dropped those on save.
+  // for dropdowns/radios, so we look up the generic field and instanceof it.
+  // Each field is wrapped in its own try/catch: pdf-lib can throw on
+  // length-constrained text, radios whose buttonValue maps to neither label
+  // nor index, checkboxes missing a /Yes appearance, etc. One bad field must
+  // not abort the rest of the loop (regressed in #577 when the inner catch
+  // was dropped along with the type-specific getters).
   if (formFields.size > 0) {
+    let form: PDFForm | undefined;
     try {
-      const form = pdfDoc.getForm();
-      for (const [name, value] of formFields) {
-        const field = form.getFieldMaybe(name);
-        if (!field) continue;
-
-        if (field instanceof PDFCheckBox) {
-          if (value) field.check();
-          else field.uncheck();
-        } else if (field instanceof PDFRadioGroup) {
-          // The viewer stores pdf.js's buttonValue, which for PDFs with an
-          // /Opt array is a numeric index ("0","1","2") rather than the
-          // option label pdf-lib's select() expects. Try the label first,
-          // then fall back to indexing into getOptions().
-          const opts = field.getOptions();
-          const s = String(value);
-          if (opts.includes(s)) {
-            field.select(s);
-          } else {
-            const idx = Number(s);
-            if (Number.isInteger(idx) && idx >= 0 && idx < opts.length) {
-              field.select(opts[idx]);
-            }
-            // else: value is neither label nor index — leave unset
-          }
-        } else if (field instanceof PDFDropdown) {
-          // select() auto-enables edit mode for values outside getOptions(),
-          // so this works for both enumerated and free-text combos.
-          field.select(String(value));
-        } else if (field instanceof PDFTextField) {
-          field.setText(String(value));
-        }
-        // PDFButton, PDFOptionList, PDFSignature: no fill_form support yet
-      }
+      form = pdfDoc.getForm();
     } catch {
-      // pdfDoc.getForm() throws if the PDF has no AcroForm
+      // No AcroForm in this PDF
+    }
+    if (form) {
+      for (const [name, value] of formFields) {
+        try {
+          const field = form.getFieldMaybe(name);
+          if (!field) continue;
+
+          if (field instanceof PDFCheckBox) {
+            if (value) field.check();
+            else field.uncheck();
+          } else if (field instanceof PDFRadioGroup) {
+            // The viewer stores pdf.js's buttonValue, which for PDFs with an
+            // /Opt array is a numeric index ("0","1","2") rather than the
+            // option label pdf-lib's select() expects. Try the label first,
+            // then fall back to indexing into getOptions().
+            const opts = field.getOptions();
+            const s = String(value);
+            if (opts.includes(s)) {
+              field.select(s);
+            } else {
+              const idx = Number(s);
+              if (Number.isInteger(idx) && idx >= 0 && idx < opts.length) {
+                field.select(opts[idx]);
+              }
+              // else: value is neither label nor index — leave unset
+            }
+          } else if (field instanceof PDFDropdown) {
+            // select() auto-enables edit mode for values outside getOptions(),
+            // so this works for both enumerated and free-text combos.
+            field.select(String(value));
+          } else if (field instanceof PDFTextField) {
+            field.setText(String(value));
+          }
+          // PDFButton, PDFOptionList, PDFSignature: no fill_form support yet
+        } catch (err) {
+          // Skip this field; carry on with the rest. Surfacing per-field
+          // failures is the caller's job (see fill_form result), not save's.
+          console.warn(`buildAnnotatedPdfBytes: skipped field "${name}":`, err);
+        }
+      }
     }
   }
 
