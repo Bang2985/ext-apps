@@ -802,6 +802,40 @@ export async function addAnnotationDicts(
 }
 
 /**
+ * Select a radio-style button group by widget on-value, bypassing pdf-lib's
+ * type-level guards. Used when pdf-lib classifies a radio as `PDFCheckBox`
+ * (PDF lacks the /Ff Radio bit) — `check()` would always pick the first
+ * widget. Mirrors `PDFAcroRadioButton.setValue` minus its `onValues` throw.
+ */
+function setButtonGroupValue(
+  field: PDFCheckBox | PDFRadioGroup,
+  onValue: string,
+): void {
+  const acro = field.acroField;
+  const off = PDFName.of("Off");
+  const widgets = acro.getWidgets();
+  // Match by PDFName identity (pdf-lib interns names) — the viewer stored
+  // pdf.js's buttonValue, which IS the widget's /AP /N on-state name.
+  let target = onValue && onValue !== "Off" ? PDFName.of(onValue) : off;
+  if (
+    target !== off &&
+    !widgets.some((w: { getOnValue(): PDFName | undefined }) => {
+      return w.getOnValue() === target;
+    })
+  ) {
+    // No widget has this on-state — leave as-is rather than corrupt /V.
+    return;
+  }
+  acro.dict.set(PDFName.of("V"), target);
+  for (const w of widgets) {
+    const on = (w as { getOnValue(): PDFName | undefined }).getOnValue();
+    (w as { setAppearanceState(s: PDFName): void }).setAppearanceState(
+      on === target ? target : off,
+    );
+  }
+}
+
+/**
  * Build annotated PDF bytes from the original document.
  * Applies user annotations and form fills, returns Uint8Array of the new PDF.
  */
@@ -836,8 +870,20 @@ export async function buildAnnotatedPdfBytes(
           if (!field) continue;
 
           if (field instanceof PDFCheckBox) {
-            if (value) field.check();
-            else field.uncheck();
+            if (typeof value === "string") {
+              // A string value on a "checkbox" means pdf-lib misclassified a
+              // radio group (PDF lacks the /Ff Radio flag bit). The viewer
+              // stored pdf.js's buttonValue, which is the widget's appearance
+              // on-state name (e.g. "0"/"1"). check()/uncheck() would set the
+              // FIRST widget's on-state regardless, so write /V and per-widget
+              // /AS directly — same as PDFAcroRadioButton.setValue but without
+              // its onValues guard (which checks the first widget only).
+              setButtonGroupValue(field, value);
+            } else if (value) {
+              field.check();
+            } else {
+              field.uncheck();
+            }
           } else if (field instanceof PDFRadioGroup) {
             // The viewer stores pdf.js's buttonValue, which for PDFs with an
             // /Opt array is a numeric index ("0","1","2") rather than the
