@@ -460,7 +460,8 @@ describe("importPdfjsAnnotation", () => {
       annotationType: 9,
       ref: { num: 5, gen: 0 },
       rect: [72, 700, 272, 712],
-      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      // pdf.js emits a FLAT Float32Array, not nested arrays.
+      quadPoints: new Float32Array([72, 712, 272, 712, 72, 700, 272, 700]),
       color: new Uint8ClampedArray([255, 255, 0]),
       contentsObj: { str: "Important" },
     };
@@ -474,12 +475,57 @@ describe("importPdfjsAnnotation", () => {
     expect((result as any).color).toBe("#ffff00");
   });
 
+  it("imports a multi-line highlight (multiple quads → multiple rects)", () => {
+    // Regression: the parser iterated quadPoints as if nested; pdf.js's
+    // flat array yielded numbers, so rects stayed empty and import bailed.
+    const ann = {
+      annotationType: 9,
+      ref: { num: 8, gen: 0 },
+      quadPoints: new Float32Array([
+        // line 1
+        72, 712, 272, 712, 72, 700, 272, 700,
+        // line 2
+        72, 698, 200, 698, 72, 686, 200, 686,
+      ]),
+      color: new Uint8ClampedArray([255, 255, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect(result!.type).toBe("highlight");
+    expect((result as any).rects).toHaveLength(2);
+    expect((result as any).rects[0]).toEqual({
+      x: 72,
+      y: 700,
+      width: 200,
+      height: 12,
+    });
+    expect((result as any).rects[1]).toEqual({
+      x: 72,
+      y: 686,
+      width: 128,
+      height: 12,
+    });
+  });
+
+  it("falls back to ann.rect when quadPoints is absent", () => {
+    const ann = {
+      annotationType: 9,
+      ref: { num: 9, gen: 0 },
+      rect: [72, 700, 272, 712],
+      color: new Uint8ClampedArray([255, 255, 0]),
+    };
+    const result = importPdfjsAnnotation(ann, 1, 0);
+    expect(result).not.toBeNull();
+    expect((result as any).rects).toHaveLength(1);
+  });
+
   it("imports an underline annotation", () => {
     const ann = {
       annotationType: 10,
       ref: { num: 6, gen: 0 },
       rect: [72, 700, 272, 712],
-      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      // pdf.js emits a FLAT Float32Array, not nested arrays.
+      quadPoints: new Float32Array([72, 712, 272, 712, 72, 700, 272, 700]),
       color: new Uint8ClampedArray([255, 0, 0]),
     };
     const result = importPdfjsAnnotation(ann, 1, 0);
@@ -493,7 +539,8 @@ describe("importPdfjsAnnotation", () => {
       annotationType: 12,
       ref: { num: 7, gen: 0 },
       rect: [72, 700, 272, 712],
-      quadPoints: [[72, 712, 272, 712, 72, 700, 272, 700]],
+      // pdf.js emits a FLAT Float32Array, not nested arrays.
+      quadPoints: new Float32Array([72, 712, 272, 712, 72, 700, 272, 700]),
       color: new Uint8ClampedArray([255, 0, 0]),
     };
     const result = importPdfjsAnnotation(ann, 2, 0);
