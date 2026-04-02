@@ -292,9 +292,17 @@ async function computeFitToWidthScale(): Promise<number | null> {
 }
 
 /**
- * Re-apply fit-to-width if the user hasn't taken over zoom. Called on
- * container resize and on display-mode transitions where the available
- * width changes underneath us.
+ * Re-apply fit-to-width if the user hasn't taken over zoom. Runs on
+ * container resize (ResizeObserver) and display-mode transitions.
+ *
+ * The ResizeObserver path is the load-bearing one. Hosts disagree on
+ * what they send and when:
+ *  - basic-host sends containerDimensions only at init, never on resize
+ *  - Claude Desktop resizes the iframe and sends displayMode, but the
+ *    iframe element may not have its new size yet when the message lands
+ * The observer fires after the iframe has actually laid out at the new
+ * size, so clientWidth is fresh. The hostContextChanged hooks are kept
+ * as a fast path / belt-and-suspenders.
  */
 async function refitToWidth(): Promise<void> {
   if (!pdfDocument || userHasZoomed) return;
@@ -305,6 +313,20 @@ async function refitToWidth(): Promise<void> {
     renderPage();
   }
 }
+
+// Refit when the container actually GROWS — not on every change. In inline
+// mode renderPage() → requestFitToContent() → host resizes iframe to the
+// (smaller) page width, which would re-trigger the observer and walk the
+// scale down to ZOOM_MIN. Growth-only covers inline→fullscreen (the case
+// that motivated this) and window-widen, without the feedback loop.
+let lastContainerWidth = 0;
+const containerResizeObserver = new ResizeObserver((entries) => {
+  const w = entries[0]?.contentRect.width ?? 0;
+  const grew = w > lastContainerWidth + 1;
+  lastContainerWidth = w;
+  if (grew) refitToWidth();
+});
+containerResizeObserver.observe(canvasContainerEl as HTMLElement);
 
 /**
  * Request the host to resize the app to fit the current PDF page.
@@ -4687,6 +4709,7 @@ app.onteardown = async () => {
     clearTimeout(pinchSettleTimer);
     pinchSettleTimer = null;
   }
+  containerResizeObserver.disconnect();
   return {};
 };
 
