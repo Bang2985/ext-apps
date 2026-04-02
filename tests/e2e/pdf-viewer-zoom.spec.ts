@@ -52,49 +52,40 @@ async function readZoomPercent(page: Page): Promise<number> {
 }
 
 test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
-  // Narrow viewport so the inline iframe is tighter than the natural page
-  // width. The default arxiv PDF is ~612pt ≈ 816 CSS px; at 600px viewport
-  // the basic-host iframe is well under that → fit-to-width kicks in below
-  // 100% inline. Fullscreen widens the iframe to viewport width — still
-  // 600px, so we can't observe a *change* from width alone. Instead we
-  // observe that the zoom level is the FIT value, not a stale value left
-  // over from a previous narrower state.
-  test.use({ viewport: { width: 1400, height: 800 } });
-
   test("entering fullscreen drops the inline shrink-to-fit scale", async ({
     page,
   }) => {
+    // Start NARROW so the initial fit-to-width lands below 100%. basic-host
+    // only sends containerDimensions at init (not on window resize), so we
+    // can't load wide and shrink — the viewer would never hear about it.
+    // The default arxiv PDF is ~612pt wide; a 500px iframe forces a fit
+    // scale around 60-70%.
+    await page.setViewportSize({ width: 500, height: 800 });
     await loadPdfServer(page);
     await waitForPdfRender(page);
     const app = getAppFrame(page);
 
-    // Squeeze the basic-host page so the inline iframe is narrow. The
-    // viewer's containerDimensions handler should refit on this resize.
-    await page.setViewportSize({ width: 500, height: 800 });
-    // Poll for the refit to land — the host emits containerDimensions on
-    // resize, which triggers refitToWidth() async.
-    await expect
-      .poll(() => readZoomPercent(page), { timeout: 10000 })
-      .toBeLessThan(100);
     const inlineZoom = await readZoomPercent(page);
+    expect(inlineZoom).toBeLessThan(100);
 
-    // Now widen back so fullscreen has room, and click the fullscreen button.
+    // Widen so the fullscreen iframe is bigger than the natural page width,
+    // then enter fullscreen. The viewer's displayMode handler calls
+    // refitToWidth() on inline→fullscreen and should land at 100%.
     await page.setViewportSize({ width: 1400, height: 800 });
     await app.locator("#fullscreen-btn").click();
     await expect(app.locator(".main.fullscreen")).toBeVisible({
       timeout: 5000,
     });
 
-    // Zoom should snap to 100% (fullscreen container > natural page width).
     // Before the fix, computeFitToWidthScale returned null when the page
     // already fit at 1.0 → the cramped inline scale stuck.
     await expect.poll(() => readZoomPercent(page), { timeout: 5000 }).toBe(100);
-    expect(inlineZoom).toBeLessThan(100); // sanity: we did observe a change
   });
 
   test("trackpad pinch (wheel + ctrlKey) zooms in fullscreen", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 1400, height: 800 });
     await loadPdfServer(page);
     await waitForPdfRender(page);
     const app = getAppFrame(page);
@@ -142,6 +133,7 @@ test.describe("PDF Viewer — fullscreen fit + pinch zoom", () => {
   });
 
   test("trackpad pinch is ignored outside fullscreen", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 800 });
     await loadPdfServer(page);
     await waitForPdfRender(page);
     const app = getAppFrame(page);
