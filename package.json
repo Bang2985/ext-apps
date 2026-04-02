@@ -125,8 +125,5 @@
     "seroval-plugins": "1.4.2",
     "solid-js": "1.9.10",
     "@types/node": "20.19.27"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
   }
 }
