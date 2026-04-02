@@ -151,6 +151,12 @@ test.describe("PDF Server - Annotations", () => {
     // Check that a highlight annotation element was rendered
     const highlightEl = appFrame.locator(".annotation-highlight");
     await expect(highlightEl.first()).toBeVisible({ timeout: 5000 });
+    // Regression: highlight must be translucent (not opaque hex), so text
+    // underneath remains readable.
+    await expect(highlightEl.first()).toHaveCSS(
+      "background-color",
+      /rgba\(255, 255, 0, 0\.35\)/,
+    );
   });
 
   test("add_annotations renders multiple annotation types", async ({

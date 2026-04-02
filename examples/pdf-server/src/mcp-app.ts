@@ -27,6 +27,7 @@ import {
   type ImageAnnotation,
   type NoteAnnotation,
   type FreetextAnnotation,
+  cssColorToRgb,
   serializeDiff,
   deserializeDiff,
   mergeAnnotations,
@@ -1933,13 +1934,20 @@ function renderAnnotation(
   viewport: { width: number; height: number; scale: number },
 ): HTMLElement[] {
   switch (def.type) {
-    case "highlight":
+    case "highlight": {
+      // Force translucency: def.color is an opaque hex (e.g. "#ffff00"), which
+      // would override the rgba()/mix-blend-mode in CSS and hide the text.
+      const rgb = def.color ? cssColorToRgb(def.color) : null;
+      const bg = rgb
+        ? `rgba(${Math.round(rgb.r * 255)}, ${Math.round(rgb.g * 255)}, ${Math.round(rgb.b * 255)}, 0.35)`
+        : undefined;
       return renderRectsAnnotation(
         def.rects,
         "annotation-highlight",
         viewport,
-        def.color ? { background: def.color } : {},
+        bg ? { background: bg } : {},
       );
+    }
     case "underline":
       return renderRectsAnnotation(
         def.rects,
@@ -3759,12 +3767,23 @@ document.addEventListener("selectionchange", () => {
 let pinchStartScale = 1.0;
 /** What we'd commit to if the gesture ended right now. */
 let previewScale = 1.0;
+/** Unclamped target — used to detect "pinched out past fit" even when
+ *  previewScale is pinned at ZOOM_MIN. */
+let previewScaleRaw = 1.0;
 /** Debounce timer — wheel events have no end event, so we wait for quiet. */
 let pinchSettleTimer: ReturnType<typeof setTimeout> | null = null;
+/** computeFitScale() snapshot at gesture start (async — may be null briefly). */
+let fitScaleAtPinchStart: number | null = null;
+/** Guards against firing toggleFullscreen() once per wheel event during a
+ *  single inline pinch-in gesture. */
+let modeTransitionInFlight = false;
 
 function beginPinch() {
   pinchStartScale = scale;
   previewScale = scale;
+  previewScaleRaw = scale;
+  fitScaleAtPinchStart = null;
+  void computeFitScale().then((s) => (fitScaleAtPinchStart = s));
   // transform-origin matches the flex layout's anchor (justify-content:
   // center, align-items: flex-start) so the preview and the committed
   // canvas grow from the same point — otherwise the page jumps on release.
@@ -3772,6 +3791,7 @@ function beginPinch() {
 }
 
 function updatePinch(nextScale: number) {
+  previewScaleRaw = nextScale;
   previewScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, nextScale));
   // Transform is RELATIVE to the rendered canvas (which sits at
   // pinchStartScale), so a previewScale equal to pinchStartScale → ratio 1.
@@ -3780,6 +3800,23 @@ function updatePinch(nextScale: number) {
 }
 
 function commitPinch() {
+  // Pinching out past fit while already at (or below) fit → user wants to
+  // leave fullscreen, not zoom further out. 0.9× threshold so a slight
+  // overshoot doesn't eject them.
+  if (
+    currentDisplayMode === "fullscreen" &&
+    fitScaleAtPinchStart !== null &&
+    pinchStartScale <= fitScaleAtPinchStart + 0.01 &&
+    previewScaleRaw < fitScaleAtPinchStart * 0.9
+  ) {
+    pageWrapperEl.style.transform = "";
+    userHasZoomed = false; // let refitScale() size the inline view
+    modeTransitionInFlight = true;
+    void toggleFullscreen().finally(() => {
+      setTimeout(() => (modeTransitionInFlight = false), 250);
+    });
+    return;
+  }
   if (Math.abs(previewScale - scale) < 0.01) {
     // Dead-zone — no re-render. Clear here since renderPage won't run.
     pageWrapperEl.style.transform = "";
@@ -3804,8 +3841,23 @@ canvasContainerEl.addEventListener(
     // Trackpad pinch arrives as wheel with ctrlKey set (Chrome/FF/Edge on
     // macOS+Windows, Safari on macOS). MUST check before the deltaX/deltaY
     // comparison below — pinch deltas come through on deltaY.
-    if (e.ctrlKey && currentDisplayMode === "fullscreen") {
+    if (e.ctrlKey) {
       e.preventDefault();
+      if (currentDisplayMode !== "fullscreen") {
+        // Inline: pinch-in (deltaY<0) is a request to go fullscreen.
+        // Pinch-out is ignored — nothing smaller than inline.
+        if (e.deltaY < 0 && !modeTransitionInFlight) {
+          modeTransitionInFlight = true;
+          void toggleFullscreen().finally(() => {
+            // Hold the latch through the settle window so the tail of the
+            // gesture doesn't immediately start zooming the new fullscreen
+            // view (or, worse, re-toggle).
+            setTimeout(() => (modeTransitionInFlight = false), 250);
+          });
+        }
+        return;
+      }
+      if (modeTransitionInFlight) return; // swallow gesture tail post-toggle
       if (pinchSettleTimer === null) beginPinch();
       // exp(-deltaY * k) makes equal-magnitude in/out deltas inverse —
       // pinch out then back lands where you started. Clamp per event so a
@@ -3858,7 +3910,7 @@ canvasContainerEl.addEventListener(
   "touchstart",
   (event) => {
     const e = event as TouchEvent;
-    if (e.touches.length !== 2 || currentDisplayMode !== "fullscreen") return;
+    if (e.touches.length !== 2) return;
     // No preventDefault here — keep iOS Safari happy. We block native
     // pinch-zoom via touch-action CSS + preventDefault on touchmove.
     touchStartDist = touchDist(e.touches);
@@ -3873,7 +3925,21 @@ canvasContainerEl.addEventListener(
     const e = event as TouchEvent;
     if (e.touches.length !== 2 || touchStartDist === 0) return;
     e.preventDefault(); // stop the browser zooming the whole viewport
-    updatePinch(pinchStartScale * (touchDist(e.touches) / touchStartDist));
+    const ratio = touchDist(e.touches) / touchStartDist;
+    if (currentDisplayMode !== "fullscreen") {
+      // Inline: a clear pinch-in means "go fullscreen". 1.15× threshold
+      // avoids triggering on jittery two-finger taps/scrolls.
+      if (ratio > 1.15 && !modeTransitionInFlight) {
+        modeTransitionInFlight = true;
+        touchStartDist = 0; // end this gesture; fullscreen will refit
+        pageWrapperEl.style.transform = "";
+        void toggleFullscreen().finally(() => {
+          setTimeout(() => (modeTransitionInFlight = false), 250);
+        });
+      }
+      return;
+    }
+    updatePinch(pinchStartScale * ratio);
   },
   { passive: false },
 );
@@ -3884,6 +3950,11 @@ canvasContainerEl.addEventListener("touchend", (event) => {
   // REMAINING set — lifting one of two leaves length 1.
   if (touchStartDist === 0 || e.touches.length >= 2) return;
   touchStartDist = 0;
+  if (currentDisplayMode !== "fullscreen") {
+    // Inline pinch that didn't cross the threshold — discard preview.
+    pageWrapperEl.style.transform = "";
+    return;
+  }
   commitPinch();
 });
 

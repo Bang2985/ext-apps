@@ -227,6 +227,10 @@ body {
   align-items: flex-start;
   padding: 1rem;
   background: var(--bg200);
+  /* JS owns pinch (inline pinch-in → fullscreen). pan-x/pan-y keeps native
+   * scrolling; the fullscreen rule below repeats this with a comment on the
+   * iOS-Safari preventDefault backstop. */
+  touch-action: pan-x pan-y;
 }
 
 .page-wrapper {
@@ -310,9 +314,21 @@ body {
 }
 
 .main.fullscreen .toolbar {
-  padding-top: calc(0.5rem + var(--safe-top, 0px));
+  padding-top: calc(0.25rem + var(--safe-top, 0px));
+  padding-bottom: 0.25rem;
   padding-left: calc(0.5rem + var(--safe-left, 0px));
   padding-right: calc(0.5rem + var(--safe-right, 0px));
+  min-height: calc(40px + var(--safe-top, 0px));
+  /* Inline can wrap (narrow chat bubble); fullscreen has the width, and
+   * wrapping would double the bar height + desync the search-bar offset. */
+  flex-wrap: nowrap;
+}
+
+.main.fullscreen .search-bar {
+  /* Track the toolbar's actual height (safe-area grows it). -1px overlaps
+   * the toolbar border so the dropdown looks attached. */
+  top: calc(40px + var(--safe-top, 0px) - 1px);
+  right: calc(var(--safe-right, 0px) - 1px);
 }
 
 .main.fullscreen .viewer {
