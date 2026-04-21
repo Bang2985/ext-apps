@@ -783,6 +783,17 @@ export interface McpUiToolMeta {
    * - "app": Tool callable by the app from this server only
    */
   visibility?: McpUiToolVisibility[];
+  /**
+   * `csp` belongs on the UI **resource** (see {@link McpUiResourceMeta}),
+   * not the tool. Hosts read it from the `resources/read` content item
+   * (with `resources/list` entry as fallback) and ignore it here.
+   */
+  csp?: never;
+  /**
+   * `permissions` belongs on the UI **resource** (see {@link McpUiResourceMeta}),
+   * not the tool. Hosts ignore it here.
+   */
+  permissions?: never;
 }
 
 /**
