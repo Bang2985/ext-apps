@@ -34,7 +34,7 @@ import {
   EmptyResultSchema,
   LoggingMessageNotificationSchema,
 } from "@modelcontextprotocol/core";
-import { EventDispatcher } from "./events";
+import { EventDispatcher } from "./events.js";
 import type { ZodLiteral, ZodObject, ZodType } from "zod/v4";
 
 type MethodSchema = ZodObject<{
@@ -87,11 +87,11 @@ import {
   McpUiRequestDisplayModeResultSchema,
   McpUiResourcePermissions,
   McpUiToolMeta,
-} from "./types";
-export * from "./types";
-export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "./constants";
-import { RESOURCE_URI_META_KEY } from "./constants";
-export { PostMessageTransport } from "./message-transport";
+} from "./types.js";
+export * from "./types.js";
+export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "./constants.js";
+import { RESOURCE_URI_META_KEY } from "./constants.js";
+export { PostMessageTransport } from "./message-transport.js";
 
 /**
  * Extract UI resource URI from tool metadata.

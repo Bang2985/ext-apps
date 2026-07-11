@@ -5,8 +5,8 @@ import {
   AppOptions,
   McpUiAppCapabilities,
   PostMessageTransport,
-} from "../app";
-export * from "../app";
+} from "../app.js";
+export * from "../app.js";
 
 /**
  * Options for configuring the {@link useApp `useApp`} hook.
