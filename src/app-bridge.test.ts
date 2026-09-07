@@ -3016,16 +3016,95 @@ describe("isToolVisibilityAppOnly", () => {
       expect(app.onteardown).toBe(handler);
     });
 
-    it("direct setRequestHandler uses base SDK replacement semantics", () => {
+    it("direct setRequestHandler throws when called twice", () => {
       const bridge2 = new AppBridge(
         createMockClient() as Client,
         testHostInfo,
         testHostCapabilities,
       );
-      bridge2.setRequestHandler("ping", () => ({}));
+      const params = z.object({});
+      bridge2.setRequestHandler("test/method", { params }, () => ({}));
       expect(() => {
-        bridge2.setRequestHandler("ping", () => ({}));
+        bridge2.setRequestHandler("test/method", { params }, () => ({}));
+      }).toThrow(/already registered/);
+    });
+
+    it("direct setRequestHandler cannot silently replace an on* host handler", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.onopenlink = async () => ({});
+      expect(() => {
+        bridge2.setRequestHandler(
+          "ui/open-link",
+          { params: z.object({}) },
+          () => ({}),
+        );
+      }).toThrow(/already registered/);
+    });
+
+    it("direct setNotificationHandler throws for event-mapped methods", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.onsizechange = () => {};
+      expect(() => {
+        bridge2.setNotificationHandler(
+          "ui/notifications/size-changed",
+          { params: z.object({}) },
+          () => {},
+        );
+      }).toThrow(/already registered/);
+    });
+
+    it("removeRequestHandler releases the method so an on* setter can re-register", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.removeRequestHandler("tools/call");
+      expect(() => {
+        bridge2.setRequestHandler("tools/call", async () => ({ content: [] }));
       }).not.toThrow();
+      expect(() => {
+        bridge2.oncalltool = async () => ({ content: [] });
+      }).not.toThrow();
+    });
+
+    it("oncreatesamplingmessage has a getter, replace semantics, and a replace warning", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      expect(bridge2.oncreatesamplingmessage).toBeUndefined();
+      const first = async () => ({
+        role: "assistant" as const,
+        content: { type: "text" as const, text: "" },
+        model: "m",
+      });
+      bridge2.oncreatesamplingmessage = first;
+      expect(bridge2.oncreatesamplingmessage).toBe(first);
+
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(() => {
+          bridge2.oncreatesamplingmessage = first;
+        }).not.toThrow();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("oncreatesamplingmessage handler replaced"),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+
+      bridge2.oncreatesamplingmessage = undefined;
+      expect(bridge2.oncreatesamplingmessage).toBeUndefined();
     });
   });
 });

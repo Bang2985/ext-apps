@@ -23,8 +23,10 @@ import {
 } from "@modelcontextprotocol/client";
 import { EmptyResultSchema } from "@modelcontextprotocol/core";
 export { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./constants.js";
-import { EventDispatcher } from "./events.js";
+import { EventDispatcher, MethodRegistry } from "./events.js";
 export { EventDispatcher } from "./events.js";
+
+type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
 import { PostMessageTransport } from "./message-transport.js";
 import {
   LATEST_PROTOCOL_VERSION,
@@ -102,71 +104,6 @@ export {
   getDocumentTheme,
   applyDocumentTheme,
 } from "./styles.js";
-
-/**
- * Metadata key for associating a UI resource URI with a tool.
- *
- * MCP servers include this key in tool definition metadata (via `tools/list`)
- * to indicate which UI resource should be displayed when the tool is called.
- * When hosts see a tool with this metadata, they fetch and render the
- * corresponding {@link App `App`}.
- *
- * **Note**: This constant is provided for reference and backwards compatibility.
- * Server developers should use {@link server-helpers!registerAppTool `registerAppTool`}
- * with the `_meta.ui.resourceUri` format instead. Host developers must check both
- * formats for compatibility.
- *
- * @example Modern format (server-side, not in Apps)
- * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_modernFormat"
- * // Preferred: Use registerAppTool with nested ui.resourceUri
- * registerAppTool(
- *   server,
- *   "weather",
- *   {
- *     description: "Get weather forecast",
- *     _meta: {
- *       ui: { resourceUri: "ui://weather/forecast" },
- *     },
- *   },
- *   handler,
- * );
- * ```
- *
- * @example Legacy format (deprecated, for backwards compatibility)
- * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_legacyFormat"
- * // Deprecated: Direct use of RESOURCE_URI_META_KEY
- * server.registerTool(
- *   "weather",
- *   {
- *     description: "Get weather forecast",
- *     _meta: {
- *       [RESOURCE_URI_META_KEY]: "ui://weather/forecast",
- *     },
- *   },
- *   handler,
- * );
- * ```
- *
- * @example How hosts check for this metadata (must support both formats)
- * ```ts source="./app.examples.ts#RESOURCE_URI_META_KEY_hostSide"
- * // Hosts should check both modern and legacy formats
- * const meta = tool._meta;
- * const uiMeta = meta?.ui as McpUiToolMeta | undefined;
- * const legacyUri = meta?.[RESOURCE_URI_META_KEY] as string | undefined;
- * const uiUri = uiMeta?.resourceUri ?? legacyUri;
- * if (typeof uiUri === "string" && uiUri.startsWith("ui://")) {
- *   // Fetch the resource and display the UI
- * }
- * ```
- */
-
-/**
- * MIME type for MCP UI resources.
- *
- * Identifies HTML content as an MCP App UI resource.
- *
- * Used by {@link server-helpers!registerAppResource `registerAppResource`} as the default MIME type for app resources.
- */
 
 /**
  * Options for configuring {@link App `App`} behavior.
@@ -359,6 +296,80 @@ export class App extends Protocol<BaseContext> {
   private _initializedSent = false;
   private readonly _registeredEvents = new Set<keyof AppEventMap>();
   private readonly _events = new EventDispatcher<AppEventMap>();
+  private readonly _methods = new MethodRegistry();
+
+  // ── Handler registration with double-set protection ─────────────────
+  //
+  // The base SDK `Protocol` silently replaces an existing handler. The four
+  // overrides below restore the v1 behaviour: a direct `setRequestHandler` /
+  // `setNotificationHandler` for a method that already has a handler throws,
+  // so a stray registration cannot silently disconnect `on*` handlers or
+  // `addEventListener` listeners. They are arrow-function class fields rather
+  // than prototype methods so that `Protocol`'s constructor — which registers
+  // its own ping/cancelled/progress handlers before our fields initialize —
+  // hits the base implementation and skips tracking.
+
+  /**
+   * Registers a request handler. Throws if a handler for the same method has
+   * already been registered — use the `on*` setter for replace semantics.
+   *
+   * @throws {Error} if a handler for this method is already registered.
+   */
+  override setRequestHandler: Protocol<BaseContext>["setRequestHandler"] = (
+    method: string,
+    ...rest: unknown[]
+  ) => {
+    this._methods.claim(method, "setRequestHandler");
+    (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
+      this,
+      method,
+      ...rest,
+    );
+  };
+
+  /**
+   * Registers a notification handler. Throws if a handler for the same method
+   * has already been registered — use the `on*` setter (replace semantics) or
+   * `addEventListener` (multi-listener) for mapped events.
+   *
+   * @throws {Error} if a handler for this method is already registered.
+   */
+  override setNotificationHandler: Protocol<BaseContext>["setNotificationHandler"] =
+    (method: string, ...rest: unknown[]) => {
+      this._methods.claim(method, "setNotificationHandler");
+      (super.setNotificationHandler as unknown as UntypedHandlerSetter).call(
+        this,
+        method,
+        ...rest,
+      );
+    };
+
+  override removeRequestHandler: Protocol<BaseContext>["removeRequestHandler"] =
+    (method: string) => {
+      this._methods.release(method);
+      super.removeRequestHandler(method);
+    };
+
+  override removeNotificationHandler: Protocol<BaseContext>["removeNotificationHandler"] =
+    (method: string) => {
+      this._methods.release(method);
+      super.removeNotificationHandler(method);
+    };
+
+  /**
+   * Register a request handler with replace semantics, bypassing the
+   * double-set protection of {@link setRequestHandler `setRequestHandler`}.
+   * Used by the `on*` request-handler setters.
+   */
+  protected replaceRequestHandler: Protocol<BaseContext>["setRequestHandler"] =
+    (method: string, ...rest: unknown[]) => {
+      this._methods.replace(method);
+      (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
+        this,
+        method,
+        ...rest,
+      );
+    };
 
   /**
    * Warn if a host-bound method is called before {@link connect `connect`} has
@@ -524,7 +535,7 @@ export class App extends Protocol<BaseContext> {
       z.config({ jitless: true });
     }
 
-    this.setRequestHandler("ping", (request) => {
+    this.replaceRequestHandler("ping", (request) => {
       console.log("Received ping:", request.params);
       return {};
     });
@@ -1056,7 +1067,7 @@ export class App extends Protocol<BaseContext> {
   ) {
     this.warnIfRequestHandlerReplaced("onteardown", this._onteardown, callback);
     this._onteardown = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/resource-teardown",
       {
         params: McpUiResourceTeardownRequestSchema.shape.params,
@@ -1114,7 +1125,7 @@ export class App extends Protocol<BaseContext> {
   ) {
     this.warnIfRequestHandlerReplaced("oncalltool", this._oncalltool, callback);
     this._oncalltool = callback;
-    this.setRequestHandler("tools/call", (request, extra) => {
+    this.replaceRequestHandler("tools/call", (request, extra) => {
       if (!this._oncalltool) throw new Error("No oncalltool handler set");
       return this._oncalltool(request.params, extra);
     });
@@ -1185,7 +1196,7 @@ export class App extends Protocol<BaseContext> {
       callback,
     );
     this._onlisttools = callback;
-    this.setRequestHandler("tools/list", (request, extra) => {
+    this.replaceRequestHandler("tools/list", (request, extra) => {
       if (!this._onlisttools) throw new Error("No onlisttools handler set");
       return this._onlisttools(request.params, extra);
     });
@@ -1221,11 +1232,11 @@ export class App extends Protocol<BaseContext> {
           );
         }
         return;
-      case "ping":
-      case "ui/resource-teardown":
-        return;
       default:
-        throw new Error(`No handler for method ${method} registered`);
+        // `ping`, `ui/*`, and custom (vendor-prefixed) methods need no
+        // declared capability. The base SDK explicitly supports custom
+        // request handlers via the `{ params, result }` form.
+        return;
     }
   }
 

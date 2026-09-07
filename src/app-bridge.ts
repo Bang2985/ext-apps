@@ -34,13 +34,15 @@ import {
   EmptyResultSchema,
   LoggingMessageNotificationSchema,
 } from "@modelcontextprotocol/core";
-import { EventDispatcher } from "./events.js";
+import { EventDispatcher, MethodRegistry } from "./events.js";
 import type { ZodLiteral, ZodObject, ZodType } from "zod/v4";
 
 type MethodSchema = ZodObject<{
   method: ZodLiteral<string>;
   params: ZodType;
 }>;
+
+type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
 
 import {
   type McpUiSandboxResourceReadyNotification,
@@ -216,8 +218,8 @@ export const SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION];
 /**
  * Extra metadata passed to request handlers.
  *
- * This type represents the additional context provided by the base MCP SDK
- * `Server` when handling requests.
+ * This type represents the additional context (`BaseContext`) provided by the
+ * base MCP SDK `Protocol` when handling requests.
  *
  * @internal
  */
@@ -302,6 +304,81 @@ export class AppBridge extends Protocol<BaseContext> {
   private _initializedReceived = false;
   private readonly _registeredEvents = new Set<keyof AppBridgeEventMap>();
   private readonly _events = new EventDispatcher<AppBridgeEventMap>();
+  private readonly _methods = new MethodRegistry();
+
+  // ── Handler registration with double-set protection ─────────────────
+  //
+  // The base SDK `Protocol` silently replaces an existing handler. The four
+  // overrides below restore the v1 behaviour: a direct `setRequestHandler` /
+  // `setNotificationHandler` for a method that already has a handler throws,
+  // so a stray registration cannot silently replace a host's `on*` handler
+  // (for example the URL allow-listing in `onopenlink`) or disconnect
+  // `addEventListener` listeners. They are arrow-function class fields rather
+  // than prototype methods so that `Protocol`'s constructor — which registers
+  // its own ping/cancelled/progress handlers before our fields initialize —
+  // hits the base implementation and skips tracking.
+
+  /**
+   * Registers a request handler. Throws if a handler for the same method has
+   * already been registered — use the `on*` setter for replace semantics.
+   *
+   * @throws {Error} if a handler for this method is already registered.
+   */
+  override setRequestHandler: Protocol<BaseContext>["setRequestHandler"] = (
+    method: string,
+    ...rest: unknown[]
+  ) => {
+    this._methods.claim(method, "setRequestHandler");
+    (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
+      this,
+      method,
+      ...rest,
+    );
+  };
+
+  /**
+   * Registers a notification handler. Throws if a handler for the same method
+   * has already been registered — use the `on*` setter (replace semantics) or
+   * `addEventListener` (multi-listener) for mapped events.
+   *
+   * @throws {Error} if a handler for this method is already registered.
+   */
+  override setNotificationHandler: Protocol<BaseContext>["setNotificationHandler"] =
+    (method: string, ...rest: unknown[]) => {
+      this._methods.claim(method, "setNotificationHandler");
+      (super.setNotificationHandler as unknown as UntypedHandlerSetter).call(
+        this,
+        method,
+        ...rest,
+      );
+    };
+
+  override removeRequestHandler: Protocol<BaseContext>["removeRequestHandler"] =
+    (method: string) => {
+      this._methods.release(method);
+      super.removeRequestHandler(method);
+    };
+
+  override removeNotificationHandler: Protocol<BaseContext>["removeNotificationHandler"] =
+    (method: string) => {
+      this._methods.release(method);
+      super.removeNotificationHandler(method);
+    };
+
+  /**
+   * Register a request handler with replace semantics, bypassing the
+   * double-set protection of {@link setRequestHandler `setRequestHandler`}.
+   * Used by the `on*` request-handler setters.
+   */
+  protected replaceRequestHandler: Protocol<BaseContext>["setRequestHandler"] =
+    (method: string, ...rest: unknown[]) => {
+      this._methods.replace(method);
+      (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
+        this,
+        method,
+        ...rest,
+      );
+    };
 
   /**
    * The base MCP SDK calls this hook for every standard and custom request
@@ -419,7 +496,7 @@ export class AppBridge extends Protocol<BaseContext> {
    *   manually using the {@link oncalltool `oncalltool`}, {@link onlistresources `onlistresources`}, etc. setters.
    * @param _hostInfo - Host application identification (name and version)
    * @param _hostCapabilities - Features and capabilities the host supports
-   * @param options - Configuration options (inherited from Server)
+   * @param options - Configuration options (`ProtocolOptions` from the base MCP SDK plus `hostContext`)
    *
    * @example With MCP client (automatic forwarding)
    * ```ts source="./app-bridge.examples.ts#AppBridge_constructor_withMcpClient"
@@ -455,7 +532,7 @@ export class AppBridge extends Protocol<BaseContext> {
 
     this._hostContext = options?.hostContext || {};
 
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/initialize",
       {
         params: McpUiInitializeRequestSchema.shape.params,
@@ -464,14 +541,14 @@ export class AppBridge extends Protocol<BaseContext> {
       (params) => this._onAppsInitialize(params),
     );
 
-    this.setRequestHandler("ping", (request, extra) => {
+    this.replaceRequestHandler("ping", (request, extra) => {
       this.onping?.(request.params, extra);
       return {};
     });
 
     // Default handler for requestDisplayMode - returns current mode from host context.
     // Hosts can override this by setting bridge.onrequestdisplaymode = ...
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/request-display-mode",
       {
         params: McpUiRequestDisplayModeRequestSchema.shape.params,
@@ -746,7 +823,7 @@ export class AppBridge extends Protocol<BaseContext> {
   ) {
     this.warnIfRequestHandlerReplaced("onmessage", this._onmessage, callback);
     this._onmessage = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/message",
       {
         params: McpUiMessageRequestSchema.shape.params,
@@ -819,7 +896,7 @@ export class AppBridge extends Protocol<BaseContext> {
   ) {
     this.warnIfRequestHandlerReplaced("onopenlink", this._onopenlink, callback);
     this._onopenlink = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/open-link",
       {
         params: McpUiOpenLinkRequestSchema.shape.params,
@@ -895,7 +972,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._ondownloadfile = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/download-file",
       {
         params: McpUiDownloadFileRequestSchema.shape.params,
@@ -999,7 +1076,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onrequestdisplaymode = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/request-display-mode",
       {
         params: McpUiRequestDisplayModeRequestSchema.shape.params,
@@ -1100,7 +1177,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onupdatemodelcontext = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "ui/update-model-context",
       {
         params: McpUiUpdateModelContextRequestSchema.shape.params,
@@ -1136,8 +1213,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `CallToolRequest` from @modelcontextprotocol/server for the request type
-   * @see `CallToolResult` from @modelcontextprotocol/server for the result type
+   * @see `CallToolRequest` from @modelcontextprotocol/client forthe request type
+   * @see `CallToolResult` from @modelcontextprotocol/client forthe result type
    */
   private _oncalltool?: (
     params: CallToolRequest["params"],
@@ -1156,7 +1233,7 @@ export class AppBridge extends Protocol<BaseContext> {
   ) {
     this.warnIfRequestHandlerReplaced("oncalltool", this._oncalltool, callback);
     this._oncalltool = callback;
-    this.setRequestHandler("tools/call", async (request, extra) => {
+    this.replaceRequestHandler("tools/call", async (request, extra) => {
       if (!this._oncalltool) throw new Error("No oncalltool handler set");
       return this._oncalltool(request.params, extra);
     });
@@ -1190,18 +1267,39 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `CreateMessageRequest` from @modelcontextprotocol/server for the request type
-   * @see `CreateMessageResult` / `CreateMessageResultWithTools` from @modelcontextprotocol/server for result types
+   * @see `CreateMessageRequest` from @modelcontextprotocol/client forthe request type
+   * @see `CreateMessageResult` / `CreateMessageResultWithTools` from @modelcontextprotocol/client forresult types
    */
+  private _oncreatesamplingmessage?: (
+    params: CreateMessageRequest["params"],
+    extra: RequestHandlerExtra,
+  ) => Promise<CreateMessageResult | CreateMessageResultWithTools>;
+  get oncreatesamplingmessage() {
+    return this._oncreatesamplingmessage;
+  }
   set oncreatesamplingmessage(
-    callback: (
-      params: CreateMessageRequest["params"],
-      extra: RequestHandlerExtra,
-    ) => Promise<CreateMessageResult | CreateMessageResultWithTools>,
+    callback:
+      | ((
+          params: CreateMessageRequest["params"],
+          extra: RequestHandlerExtra,
+        ) => Promise<CreateMessageResult | CreateMessageResultWithTools>)
+      | undefined,
   ) {
-    this.setRequestHandler("sampling/createMessage", async (request, extra) => {
-      return callback(request.params, extra);
-    });
+    this.warnIfRequestHandlerReplaced(
+      "oncreatesamplingmessage",
+      this._oncreatesamplingmessage,
+      callback,
+    );
+    this._oncreatesamplingmessage = callback;
+    this.replaceRequestHandler(
+      "sampling/createMessage",
+      async (request, extra) => {
+        if (!this._oncreatesamplingmessage) {
+          throw new Error("No oncreatesamplingmessage handler set");
+        }
+        return this._oncreatesamplingmessage(request.params, extra);
+      },
+    );
   }
 
   /**
@@ -1221,7 +1319,7 @@ export class AppBridge extends Protocol<BaseContext> {
    * });
    * ```
    *
-   * @see `ToolListChangedNotification` from @modelcontextprotocol/server for the notification type
+   * @see `ToolListChangedNotification` from @modelcontextprotocol/client forthe notification type
    */
   sendToolListChanged(params: ToolListChangedNotification["params"] = {}) {
     return this.notification({
@@ -1252,8 +1350,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListResourcesRequest` from @modelcontextprotocol/server for the request type
-   * @see `ListResourcesResult` from @modelcontextprotocol/server for the result type
+   * @see `ListResourcesRequest` from @modelcontextprotocol/client forthe request type
+   * @see `ListResourcesResult` from @modelcontextprotocol/client forthe result type
    */
   private _onlistresources?: (
     params: ListResourcesRequest["params"],
@@ -1276,7 +1374,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onlistresources = callback;
-    this.setRequestHandler("resources/list", async (request, extra) => {
+    this.replaceRequestHandler("resources/list", async (request, extra) => {
       if (!this._onlistresources)
         throw new Error("No onlistresources handler set");
       return this._onlistresources(request.params, extra);
@@ -1305,8 +1403,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListResourceTemplatesRequest` from @modelcontextprotocol/server for the request type
-   * @see `ListResourceTemplatesResult` from @modelcontextprotocol/server for the result type
+   * @see `ListResourceTemplatesRequest` from @modelcontextprotocol/client forthe request type
+   * @see `ListResourceTemplatesResult` from @modelcontextprotocol/client forthe result type
    */
   private _onlistresourcetemplates?: (
     params: ListResourceTemplatesRequest["params"],
@@ -1329,7 +1427,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onlistresourcetemplates = callback;
-    this.setRequestHandler(
+    this.replaceRequestHandler(
       "resources/templates/list",
       async (request, extra) => {
         if (!this._onlistresourcetemplates)
@@ -1361,8 +1459,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ReadResourceRequest` from @modelcontextprotocol/server for the request type
-   * @see `ReadResourceResult` from @modelcontextprotocol/server for the result type
+   * @see `ReadResourceRequest` from @modelcontextprotocol/client forthe request type
+   * @see `ReadResourceResult` from @modelcontextprotocol/client forthe result type
    */
   private _onreadresource?: (
     params: ReadResourceRequest["params"],
@@ -1385,7 +1483,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onreadresource = callback;
-    this.setRequestHandler("resources/read", async (request, extra) => {
+    this.replaceRequestHandler("resources/read", async (request, extra) => {
       if (!this._onreadresource)
         throw new Error("No onreadresource handler set");
       return this._onreadresource(request.params, extra);
@@ -1409,7 +1507,7 @@ export class AppBridge extends Protocol<BaseContext> {
    * });
    * ```
    *
-   * @see `ResourceListChangedNotification` from @modelcontextprotocol/server for the notification type
+   * @see `ResourceListChangedNotification` from @modelcontextprotocol/client forthe notification type
    */
   sendResourceListChanged(
     params: ResourceListChangedNotification["params"] = {},
@@ -1442,8 +1540,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListPromptsRequest` from @modelcontextprotocol/server for the request type
-   * @see `ListPromptsResult` from @modelcontextprotocol/server for the result type
+   * @see `ListPromptsRequest` from @modelcontextprotocol/client forthe request type
+   * @see `ListPromptsResult` from @modelcontextprotocol/client forthe result type
    */
   private _onlistprompts?: (
     params: ListPromptsRequest["params"],
@@ -1466,7 +1564,7 @@ export class AppBridge extends Protocol<BaseContext> {
       callback,
     );
     this._onlistprompts = callback;
-    this.setRequestHandler("prompts/list", async (request, extra) => {
+    this.replaceRequestHandler("prompts/list", async (request, extra) => {
       if (!this._onlistprompts) throw new Error("No onlistprompts handler set");
       return this._onlistprompts(request.params, extra);
     });
@@ -1489,7 +1587,7 @@ export class AppBridge extends Protocol<BaseContext> {
    * });
    * ```
    *
-   * @see `PromptListChangedNotification` from @modelcontextprotocol/server for the notification type
+   * @see `PromptListChangedNotification` from @modelcontextprotocol/client forthe notification type
    */
   sendPromptListChanged(params: PromptListChangedNotification["params"] = {}) {
     return this.notification({
