@@ -1,6 +1,6 @@
 {
   "name": "@modelcontextprotocol/server-budget-allocator",
-  "version": "1.7.5",
+  "version": "2.0.0",
   "type": "module",
   "description": "Budget allocator MCP App Server with interactive visualization",
   "repository": {
@@ -26,14 +26,14 @@
     "serve": "bun --watch main.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.7.0",
     "@modelcontextprotocol/express": "2.0.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "chart.js": "^4.4.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "zod": "^4.1.13"
+    "zod": "^4.2.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
