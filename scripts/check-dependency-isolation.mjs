@@ -17,13 +17,20 @@ const packageJson = JSON.parse(
 const client = "@modelcontextprotocol/client";
 const server = "@modelcontextprotocol/server";
 
+// App and AppBridge extend the client package's Protocol class, so client is
+// a required peer for every consumer. The server helpers are only needed by
+// server authors, so server stays optional: View-only consumers must not have
+// it installed or bundled.
 for (const role of [client, server]) {
   if (!packageJson.peerDependencies?.[role]) {
     throw new Error(`${role} must remain a peer dependency`);
   }
-  if (packageJson.peerDependenciesMeta?.[role]?.optional !== true) {
-    throw new Error(`${role} must be an optional peer dependency`);
-  }
+}
+if (packageJson.peerDependenciesMeta?.[client]?.optional) {
+  throw new Error(`${client} must be a required peer dependency`);
+}
+if (packageJson.peerDependenciesMeta?.[server]?.optional !== true) {
+  throw new Error(`${server} must be an optional peer dependency`);
 }
 
 /**
@@ -40,6 +47,13 @@ function exactDevDependency(name) {
     );
   }
   return version;
+}
+
+/** Exact version of a package as installed in this repository's node_modules. */
+function installedVersion(name) {
+  return JSON.parse(
+    readFileSync(join(root, "node_modules", name, "package.json"), "utf8"),
+  ).version;
 }
 
 const temporaryRoot = mkdtempSync(join(tmpdir(), "ext-apps-role-peers-"));
@@ -72,17 +86,25 @@ try {
 
   const consumers = [
     {
+      // View / host author: ext-apps + client (+ react for the hooks entry).
       name: "app-only",
       dependencies: {
         "@types/node": exactDevDependency("@types/node"),
+        "@types/react": installedVersion("@types/react"),
         [client]: exactDevDependency(client),
         "@modelcontextprotocol/ext-apps": `file:${tarball}`,
+        react: installedVersion("react"),
       },
       absent: server,
+      // server must be neither installed (it is an optional peer) nor bundled.
+      mustNotInstall: true,
       entry:
-        'import { App } from "@modelcontextprotocol/ext-apps"; import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge"; console.log(App, AppBridge);',
+        'import { App } from "@modelcontextprotocol/ext-apps"; import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge"; import { useApp } from "@modelcontextprotocol/ext-apps/react"; console.log(App, AppBridge, useApp);',
     },
     {
+      // Server author: ext-apps + server. npm auto-installs client as a
+      // required peer (its types back the shared wire types), but the server
+      // entry must not pull it into a runtime bundle.
       name: "server-only",
       dependencies: {
         "@types/node": exactDevDependency("@types/node"),
@@ -90,6 +112,7 @@ try {
         [server]: exactDevDependency(server),
       },
       absent: client,
+      mustNotInstall: false,
       entry:
         'import { registerAppTool } from "@modelcontextprotocol/ext-apps/server"; console.log(registerAppTool);',
     },
@@ -115,22 +138,24 @@ try {
         "--no-audit",
         "--no-fund",
       ],
-      { cwd: directory, stdio: "pipe", env: npmEnvironment },
+      { cwd: directory, stdio: "inherit", env: npmEnvironment },
     );
 
-    const absentPath = join(
-      directory,
-      "node_modules",
-      ...consumer.absent.split("/"),
-      "package.json",
-    );
-    try {
-      readFileSync(absentPath);
-      throw new Error(
-        `${consumer.name} unexpectedly installed ${consumer.absent}`,
+    if (consumer.mustNotInstall) {
+      const absentPath = join(
+        directory,
+        "node_modules",
+        ...consumer.absent.split("/"),
+        "package.json",
       );
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      try {
+        readFileSync(absentPath);
+        throw new Error(
+          `${consumer.name} unexpectedly installed ${consumer.absent}`,
+        );
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
 
     writeFileSync(join(directory, "entry.ts"), consumer.entry);
@@ -138,6 +163,7 @@ try {
       join(directory, "tsconfig.json"),
       JSON.stringify({
         compilerOptions: {
+          jsx: "react-jsx",
           lib: ["ES2020", "DOM"],
           module: "ESNext",
           moduleResolution: "bundler",
@@ -165,7 +191,7 @@ try {
         "--outfile=bundle.js",
         `--metafile=${metafile}`,
       ],
-      { cwd: directory, stdio: "pipe" },
+      { cwd: directory, stdio: "inherit" },
     );
     const bundleInputs = Object.keys(
       JSON.parse(readFileSync(metafile, "utf8")).inputs,
