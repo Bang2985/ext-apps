@@ -19,6 +19,7 @@ const config = {
     "docs/authorization.md",
     "docs/csp-cors.md",
     "docs/migrate_from_openai_apps.md",
+    "docs/migrate-to-2.md",
   ],
   entryPoints: [
     "src/server/index.ts",
@@ -43,6 +44,7 @@ const config = {
       ResponseCacheStore: BASE_SDK_DOCS,
       SdkError: BASE_SDK_DOCS,
       "SdkErrorCode.MethodNotSupportedByProtocolVersion": BASE_SDK_DOCS,
+      StandardJSONSchemaV1: BASE_SDK_DOCS,
       "SdkErrorCode.UnsupportedResultType": BASE_SDK_DOCS,
       "__type.enforceStrictCapabilities": BASE_SDK_DOCS,
     },

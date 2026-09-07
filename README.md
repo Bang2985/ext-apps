@@ -122,27 +122,33 @@ resources:
 
 ## Getting Started
 
+Requires Node.js 20+. The base MCP SDK packages are `^2.0.0` peers of
+`ext-apps` (`@modelcontextprotocol/core` is pulled in transitively).
+
 For a View or host:
 
 ```bash
 npm install -S @modelcontextprotocol/ext-apps \
-  @modelcontextprotocol/client@2.0.0-beta.5 \
-  @modelcontextprotocol/core@2.0.0-beta.5 \
+  @modelcontextprotocol/client@^2.0.0 \
   zod@^4.2.0
 ```
 
-For an MCP server:
+For an MCP server, add the server package (and, for HTTP transports, the Node
+and Express adapters):
 
 ```bash
 npm install -S @modelcontextprotocol/ext-apps \
-  @modelcontextprotocol/server@2.0.0-beta.5 \
-  @modelcontextprotocol/core@2.0.0-beta.5 \
+  @modelcontextprotocol/client@^2.0.0 \
+  @modelcontextprotocol/server@^2.0.0 \
+  @modelcontextprotocol/node@^2.0.0 \
+  @modelcontextprotocol/express@^2.0.0 \
   zod@^4.2.0
 ```
 
-Applications that implement both roles should install both `client` and
-`server`. Keep all installed base MCP SDK packages on the exact same published
-beta so they share one compatible protocol implementation.
+The wire protocol is unchanged between `ext-apps` 1.x and 2.x: a 2.x View works
+in a 1.x host and a 2.x host renders 1.x Views. See the
+[migration guide](https://apps.extensions.modelcontextprotocol.io/api/documents/migrate-to-v2.html)
+when upgrading from 1.x.
 
 **New here?** Start with the
 [Quickstart Guide](https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html)

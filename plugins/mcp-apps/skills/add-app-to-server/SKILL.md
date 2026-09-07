@@ -77,15 +77,27 @@ Before writing any code, analyze the server's existing tools and determine which
 ## Step 2: Add Dependencies
 
 ```bash
-npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@2.0.0-beta.5 @modelcontextprotocol/core@2.0.0-beta.5 @modelcontextprotocol/server@2.0.0-beta.5 zod@^4.2.0
+npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@^2.0.0 @modelcontextprotocol/server@^2.0.0 zod@^4.2.0
 npm install -D vite vite-plugin-singlefile
 ```
 
-Plus framework-specific dependencies if needed (e.g., `react`, `react-dom`, `@vitejs/plugin-react` for React).
+Plus framework-specific dependencies if needed (e.g., `react`, `react-dom`, `@vitejs/plugin-react` for React), and `@modelcontextprotocol/node` / `@modelcontextprotocol/express` if the server uses HTTP transports.
 
-Use the exact base MCP SDK prerelease required by ext-apps. Existing servers
-that still import `@modelcontextprotocol/sdk` v1 must migrate those imports and
-handler schemas before adding the App integration.
+ext-apps 2.x requires the split base MCP SDK packages at `^2.0.0`
+(`@modelcontextprotocol/core` comes in transitively). Existing servers that
+still import `@modelcontextprotocol/sdk` v1 must migrate those imports and
+handler schemas before adding the App integration:
+
+| SDK v1 (`@modelcontextprotocol/sdk`) | SDK v2 |
+|---|---|
+| `sdk/server/mcp.js` (`McpServer`) | `@modelcontextprotocol/server` |
+| `sdk/server/streamableHttp.js` (`StreamableHTTPServerTransport`) | `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node` |
+| Express wiring by hand | `createMcpExpressApp` from `@modelcontextprotocol/express` |
+| `sdk/server/stdio.js` | `@modelcontextprotocol/server/stdio` |
+| `sdk/types.js` (types, schemas) | `@modelcontextprotocol/client` or `@modelcontextprotocol/server` |
+| Raw zod shapes: `inputSchema: { q: z.string() }` | `inputSchema: z.object({ q: z.string() })` |
+| `extra.signal` in tool callbacks | `extra.mcpReq.signal` |
+| `setRequestHandler(SomeRequestSchema, handler)` | `setRequestHandler("some/method", handler)` |
 
 ## Step 3: Set Up the Build Pipeline
 

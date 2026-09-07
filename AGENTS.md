@@ -60,8 +60,8 @@ rm -fR  package-lock.json node_modules && \
 
 ### Key Source Files
 
-- `src/app.ts` - `App` subclasses the base MCP SDK `Protocol`, handles View initialization, tool calls, and messaging
-- `src/app-bridge.ts` - `AppBridge` subclasses the base MCP SDK `Protocol` for the iframe channel and proxies through a separate outer `Client`
+- `src/app.ts` - `App` subclasses `Protocol` from `@modelcontextprotocol/client`, handles View initialization, tool calls, and messaging
+- `src/app-bridge.ts` - `AppBridge` subclasses `Protocol` from `@modelcontextprotocol/client` for the iframe channel and proxies through a separate outer `Client`
 - `src/server/index.ts` - Helpers for MCP servers to register tools/resources with UI metadata
 - `src/types.ts` - Protocol types re-exported from `spec.types.ts` and Zod schemas from `generated/schema.ts` (auto-generated during build)
 - `src/message-transport.ts` - `PostMessageTransport` for iframe communication

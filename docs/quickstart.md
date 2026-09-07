@@ -37,7 +37,7 @@ Install the dependencies you'll need:
 
 ```bash
 npm init -y
-npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@2.0.0-beta.5 @modelcontextprotocol/core@2.0.0-beta.5 @modelcontextprotocol/server@2.0.0-beta.5 @modelcontextprotocol/node@2.0.0-beta.5 @modelcontextprotocol/express@2.0.0-beta.5 zod@^4.2.0 express cors
+npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@^2.0.0 @modelcontextprotocol/server@^2.0.0 @modelcontextprotocol/node@^2.0.0 @modelcontextprotocol/express@^2.0.0 zod@^4.2.0 express cors
 npm install -D typescript vite vite-plugin-singlefile @types/express @types/cors @types/node tsx concurrently cross-env
 ```
 
