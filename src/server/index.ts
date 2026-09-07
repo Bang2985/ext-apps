@@ -39,31 +39,69 @@ import {
 } from "../spec.types.js";
 import { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "../constants.js";
 import type {
+  CallToolResult,
   ClientCapabilities,
+  InputRequiredResult,
   McpServer,
   ReadResourceResult,
   RegisteredTool,
   ResourceMetadata,
+  ServerContext,
   StandardSchemaWithJSON,
   ToolAnnotations,
   ToolCallback,
   ReadResourceCallback as _ReadResourceCallback,
   RegisteredResource,
 } from "@modelcontextprotocol/server";
+import type { z } from "zod/v4";
 
 // Re-exports for convenience
 export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE };
 export type { ResourceMetadata, ToolCallback };
 
 /**
+ * A plain `{ field: z.string() }` record accepted by the deprecated raw-shape
+ * form of {@link registerAppTool `registerAppTool`}; the SDK auto-wraps it with `z.object()`.
+ *
+ * @deprecated Wrap with `z.object({...})` instead.
+ */
+export type ZodRawShape = Record<string, z.ZodType>;
+
+/**
+ * {@link ToolCallback `ToolCallback`} variant used when `inputSchema` is a {@link ZodRawShape `ZodRawShape`}.
+ * Mirrors the callback type of the SDK's deprecated `registerTool` overload.
+ *
+ * @deprecated Wrap with `z.object({...})` instead and use {@link ToolCallback `ToolCallback`}.
+ */
+export type LegacyToolCallback<Args extends ZodRawShape | undefined> =
+  Args extends ZodRawShape
+    ? (
+        args: z.infer<z.ZodObject<Args>>,
+        ctx: ServerContext,
+      ) =>
+        | CallToolResult
+        | InputRequiredResult
+        | Promise<CallToolResult | InputRequiredResult>
+    : (
+        ctx: ServerContext,
+      ) =>
+        | CallToolResult
+        | InputRequiredResult
+        | Promise<CallToolResult | InputRequiredResult>;
+
+/**
  * Base tool configuration matching the standard MCP server tool options.
  * Extended by {@link McpUiAppToolConfig `McpUiAppToolConfig`} to add UI metadata requirements.
+ *
+ * `inputSchema`/`outputSchema` accept any Standard JSON Schema (zod v4, ArkType,
+ * Valibot, ...). A raw zod shape (`{ field: z.string() }`) is still accepted for
+ * backward compatibility but deprecated.
  */
 export interface ToolConfig {
   title?: string;
   description?: string;
-  inputSchema?: StandardSchemaWithJSON;
-  outputSchema?: StandardSchemaWithJSON;
+  inputSchema?: ZodRawShape | StandardSchemaWithJSON;
+  outputSchema?: ZodRawShape | StandardSchemaWithJSON;
   annotations?: ToolAnnotations;
   _meta?: Record<string, unknown>;
 }
@@ -217,6 +255,31 @@ export function registerAppTool<
     outputSchema?: OutputArgs;
   },
   cb: ToolCallback<InputArgs>,
+): RegisteredTool;
+/**
+ * @deprecated Wrap with `z.object({...})` instead. Raw-shape form:
+ * `inputSchema`/`outputSchema` may be a plain `{ field: z.string() }` record;
+ * the SDK auto-wraps it with `z.object()`.
+ */
+export function registerAppTool<
+  InputArgs extends ZodRawShape,
+  OutputArgs extends ZodRawShape | StandardSchemaWithJSON | undefined =
+    undefined,
+>(
+  server: Pick<McpServer, "registerTool">,
+  name: string,
+  config: McpUiAppToolConfig & {
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+  },
+  cb: LegacyToolCallback<InputArgs>,
+): RegisteredTool;
+export function registerAppTool(
+  server: Pick<McpServer, "registerTool">,
+  name: string,
+  config: McpUiAppToolConfig,
+  // Widest callback shape accepted by either overload above.
+  cb: (...args: never[]) => unknown,
 ): RegisteredTool {
   // Normalize metadata for backward compatibility:
   // - If _meta.ui.resourceUri is set, also set the legacy flat key
@@ -234,7 +297,16 @@ export function registerAppTool<
     normalizedMeta = { ...meta, ui: { ...uiMeta, resourceUri: legacyUri } };
   }
 
-  return server.registerTool(name, { ...config, _meta: normalizedMeta }, cb);
+  // The public overloads above guarantee `config`/`cb` match one of the SDK's
+  // own registerTool overloads; the union-typed implementation cannot select
+  // between them, so widen for the forwarding call.
+  return server.registerTool(
+    name,
+    { ...config, _meta: normalizedMeta } as Parameters<
+      McpServer["registerTool"]
+    >[1],
+    cb as ToolCallback<StandardSchemaWithJSON>,
+  );
 }
 
 export type McpUiReadResourceResult = ReadResourceResult & {
