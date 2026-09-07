@@ -6,13 +6,13 @@ import {
 } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
-import { App } from "./app";
+import { App } from "./app.js";
 import {
   LATEST_PROTOCOL_VERSION,
   McpUiInitializeRequestSchema,
   McpUiInitializeResultSchema,
   McpUiInitializedNotificationSchema,
-} from "./types";
+} from "./types.js";
 
 type ConnectedPair = {
   app: App;
