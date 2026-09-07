@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -25,33 +26,56 @@ for (const role of [client, server]) {
   }
 }
 
+/**
+ * Exact version for a synthetic consumer dependency. Read from
+ * devDependencies so the consumers exercise the same SDK version the
+ * repository tests against; the check would silently drift if a range were
+ * allowed here.
+ */
+function exactDevDependency(name) {
+  const version = packageJson.devDependencies?.[name];
+  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")) {
+    throw new Error(
+      `devDependencies["${name}"] must be an exact version, got ${JSON.stringify(version)}`,
+    );
+  }
+  return version;
+}
+
 const temporaryRoot = mkdtempSync(join(tmpdir(), "ext-apps-role-peers-"));
 try {
+  // Minimal environment: nothing inherited from the caller's npm config
+  // (registry overrides, auth tokens, npm_config_* set by an outer `npm run`)
+  // can leak into the synthetic consumers.
   const npmEnvironment = {
-    ...process.env,
+    PATH: process.env.PATH ?? process.env.Path,
+    HOME: process.env.HOME ?? process.env.USERPROFILE,
     npm_config_cache: join(temporaryRoot, "npm-cache"),
   };
-  const packOutput = JSON.parse(
-    execFileSync(
-      "npm",
-      [
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--pack-destination",
-        temporaryRoot,
-      ],
-      { cwd: root, encoding: "utf8", env: npmEnvironment },
-    ),
+  const packDestination = join(temporaryRoot, "pack");
+  mkdirSync(packDestination);
+  // `npm pack` runs the package's `prepare` script even with --ignore-scripts
+  // (pacote's directory fetcher), and its output can pollute stdout, so do not
+  // rely on `--json`: locate the tarball on disk instead.
+  execFileSync(
+    "npm",
+    ["pack", "--ignore-scripts", "--pack-destination", packDestination],
+    { cwd: root, stdio: "pipe", env: npmEnvironment },
   );
-  const tarball = join(temporaryRoot, packOutput[0].filename);
+  const tarballs = readdirSync(packDestination).filter((name) =>
+    name.endsWith(".tgz"),
+  );
+  if (tarballs.length !== 1) {
+    throw new Error(`expected exactly one tarball, found ${tarballs}`);
+  }
+  const tarball = join(packDestination, tarballs[0]);
 
   const consumers = [
     {
       name: "app-only",
       dependencies: {
-        "@types/node": packageJson.devDependencies["@types/node"],
-        [client]: packageJson.devDependencies[client],
+        "@types/node": exactDevDependency("@types/node"),
+        [client]: exactDevDependency(client),
         "@modelcontextprotocol/ext-apps": `file:${tarball}`,
       },
       absent: server,
@@ -61,9 +85,9 @@ try {
     {
       name: "server-only",
       dependencies: {
-        "@types/node": packageJson.devDependencies["@types/node"],
+        "@types/node": exactDevDependency("@types/node"),
         "@modelcontextprotocol/ext-apps": `file:${tarball}`,
-        [server]: packageJson.devDependencies[server],
+        [server]: exactDevDependency(server),
       },
       absent: client,
       entry:
