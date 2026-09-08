@@ -30,6 +30,12 @@ import {
   type LegacyNotificationHandler,
   type LegacyRequestHandler,
 } from "./legacy-handlers.js";
+export type {
+  LegacyMethodSchema,
+  LegacyNotificationHandler,
+  LegacyRequestHandler,
+  LegacyRequestHandlerExtra,
+} from "./legacy-handlers.js";
 export { EventDispatcher } from "./events.js";
 
 import { PostMessageTransport } from "./message-transport.js";
