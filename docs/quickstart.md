@@ -59,6 +59,7 @@ npm pkg set scripts.start='concurrently --raw "cross-env NODE_ENV=development IN
 ```json source="../examples/quickstart/tsconfig.json"
 {
   "compilerOptions": {
+    "types": ["node", "vite/client"],
     "target": "ESNext",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "module": "ESNext",
@@ -87,6 +88,7 @@ npm pkg set scripts.start='concurrently --raw "cross-env NODE_ENV=development IN
 ```json source="../examples/quickstart/tsconfig.server.json"
 {
   "compilerOptions": {
+    "types": ["node"],
     "target": "ES2022",
     "lib": ["ES2022"],
     "module": "NodeNext",
