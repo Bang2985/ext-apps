@@ -77,7 +77,7 @@ const hostContext: McpUiHostContext = {
   locale: "en-US",
 };
 
-/** Captured from ext-apps 1.7.x View (sdk 1.x key order, numeric ids from 0). */
+/** Shaped like ext-apps 1.7.x View traffic (sdk-1 key order, 0-based numeric ids); not a recorded capture. */
 const v1View = {
   initialize: {
     method: "ui/initialize",
@@ -120,7 +120,7 @@ const v1View = {
   }),
 };
 
-/** Captured from ext-apps 1.7.x AppBridge (sdk 1.x). */
+/** Shaped like ext-apps 1.7.x AppBridge traffic (sdk 1.x); not a recorded capture. */
 const v1Host = {
   initializeResult: (id: number) => ({
     result: {

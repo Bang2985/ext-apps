@@ -123,7 +123,7 @@ resources:
 ## Getting Started
 
 Requires Node.js 20+. The base MCP SDK packages are `^2.0.0` peers of
-`ext-apps` (`@modelcontextprotocol/core` is pulled in transitively).
+`ext-apps` (`@modelcontextprotocol/core` is a required peer that `client` already depends on, so npm installs it for you).
 
 For a View or host:
 

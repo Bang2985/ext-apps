@@ -26,7 +26,6 @@ export { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./constants.js";
 import { EventDispatcher, MethodRegistry } from "./events.js";
 export { EventDispatcher } from "./events.js";
 
-type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
 import { PostMessageTransport } from "./message-transport.js";
 import {
   LATEST_PROTOCOL_VERSION,
@@ -68,6 +67,8 @@ import {
   validateStandardSchema,
 } from "./standard-schema.js";
 import { z, type ZodLiteral, type ZodObject, type ZodType } from "zod/v4";
+
+type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
 
 type MethodSchema = ZodObject<{
   method: ZodLiteral<string>;
@@ -530,6 +531,10 @@ export class App extends Protocol<BaseContext> {
     private options: AppOptions = { autoResize: true },
   ) {
     super(options);
+    // Claim the handlers the base Protocol constructor installed so a direct
+    // setNotificationHandler cannot silently replace them either.
+    this._methods.replace("notifications/cancelled");
+    this._methods.replace("notifications/progress");
 
     if (!options.allowUnsafeEval) {
       z.config({ jitless: true });

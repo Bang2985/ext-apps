@@ -94,10 +94,11 @@ handler schemas before adding the App integration:
 | `sdk/server/streamableHttp.js` (`StreamableHTTPServerTransport`) | `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node` |
 | Express wiring by hand | `createMcpExpressApp` from `@modelcontextprotocol/express` |
 | `sdk/server/stdio.js` | `@modelcontextprotocol/server/stdio` |
-| `sdk/types.js` (types, schemas) | `@modelcontextprotocol/client` or `@modelcontextprotocol/server` |
+| `sdk/types.js` types (`CallToolResult`, …) | `@modelcontextprotocol/client` or `@modelcontextprotocol/server` |
+| `sdk/types.js` zod schemas (`CallToolResultSchema`, …) | `@modelcontextprotocol/core` |
 | Raw zod shapes: `inputSchema: { q: z.string() }` | `inputSchema: z.object({ q: z.string() })` |
 | `extra.signal` in tool callbacks | `extra.mcpReq.signal` |
-| `setRequestHandler(SomeRequestSchema, handler)` | `setRequestHandler("some/method", handler)` |
+| `setRequestHandler(SomeRequestSchema, handler)` | `setRequestHandler("some/method", { params: ParamsSchema }, handler)` (the 2-arg form is only for spec methods such as `"tools/call"`) |
 
 ## Step 3: Set Up the Build Pipeline
 

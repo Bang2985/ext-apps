@@ -42,8 +42,6 @@ type MethodSchema = ZodObject<{
   params: ZodType;
 }>;
 
-type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
-
 import {
   type McpUiSandboxResourceReadyNotification,
   type McpUiSizeChangedNotification,
@@ -93,6 +91,8 @@ import {
 export * from "./types.js";
 export { RESOURCE_URI_META_KEY, RESOURCE_MIME_TYPE } from "./constants.js";
 import { RESOURCE_URI_META_KEY } from "./constants.js";
+
+type UntypedHandlerSetter = (this: unknown, ...args: unknown[]) => void;
 export { PostMessageTransport } from "./message-transport.js";
 
 /**
@@ -527,6 +527,8 @@ export class AppBridge extends Protocol<BaseContext> {
     options?: HostOptions,
   ) {
     super(options);
+    this._methods.replace("notifications/cancelled");
+    this._methods.replace("notifications/progress");
 
     this._ensureEventSlot("initialized");
 
@@ -1213,8 +1215,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `CallToolRequest` from @modelcontextprotocol/client forthe request type
-   * @see `CallToolResult` from @modelcontextprotocol/client forthe result type
+   * @see `CallToolRequest` from @modelcontextprotocol/client for the request type
+   * @see `CallToolResult` from @modelcontextprotocol/client for the result type
    */
   private _oncalltool?: (
     params: CallToolRequest["params"],
@@ -1267,8 +1269,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `CreateMessageRequest` from @modelcontextprotocol/client forthe request type
-   * @see `CreateMessageResult` / `CreateMessageResultWithTools` from @modelcontextprotocol/client forresult types
+   * @see `CreateMessageRequest` from @modelcontextprotocol/client for the request type
+   * @see `CreateMessageResult` / `CreateMessageResultWithTools` from @modelcontextprotocol/client for result types
    */
   private _oncreatesamplingmessage?: (
     params: CreateMessageRequest["params"],
@@ -1314,12 +1316,12 @@ export class AppBridge extends Protocol<BaseContext> {
    * @example
    * ```typescript
    * // In your MCP client notification handler:
-   * mcpClient.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+   * mcpClient.setNotificationHandler("notifications/tools/list_changed", () => {
    *   bridge.sendToolListChanged();
    * });
    * ```
    *
-   * @see `ToolListChangedNotification` from @modelcontextprotocol/client forthe notification type
+   * @see `ToolListChangedNotification` from @modelcontextprotocol/client for the notification type
    */
   sendToolListChanged(params: ToolListChangedNotification["params"] = {}) {
     return this.notification({
@@ -1350,8 +1352,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListResourcesRequest` from @modelcontextprotocol/client forthe request type
-   * @see `ListResourcesResult` from @modelcontextprotocol/client forthe result type
+   * @see `ListResourcesRequest` from @modelcontextprotocol/client for the request type
+   * @see `ListResourcesResult` from @modelcontextprotocol/client for the result type
    */
   private _onlistresources?: (
     params: ListResourcesRequest["params"],
@@ -1403,8 +1405,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListResourceTemplatesRequest` from @modelcontextprotocol/client forthe request type
-   * @see `ListResourceTemplatesResult` from @modelcontextprotocol/client forthe result type
+   * @see `ListResourceTemplatesRequest` from @modelcontextprotocol/client for the request type
+   * @see `ListResourceTemplatesResult` from @modelcontextprotocol/client for the result type
    */
   private _onlistresourcetemplates?: (
     params: ListResourceTemplatesRequest["params"],
@@ -1459,8 +1461,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ReadResourceRequest` from @modelcontextprotocol/client forthe request type
-   * @see `ReadResourceResult` from @modelcontextprotocol/client forthe result type
+   * @see `ReadResourceRequest` from @modelcontextprotocol/client for the request type
+   * @see `ReadResourceResult` from @modelcontextprotocol/client for the result type
    */
   private _onreadresource?: (
     params: ReadResourceRequest["params"],
@@ -1502,12 +1504,12 @@ export class AppBridge extends Protocol<BaseContext> {
    * @example
    * ```typescript
    * // In your MCP client notification handler:
-   * mcpClient.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+   * mcpClient.setNotificationHandler("notifications/resources/list_changed", () => {
    *   bridge.sendResourceListChanged();
    * });
    * ```
    *
-   * @see `ResourceListChangedNotification` from @modelcontextprotocol/client forthe notification type
+   * @see `ResourceListChangedNotification` from @modelcontextprotocol/client for the notification type
    */
   sendResourceListChanged(
     params: ResourceListChangedNotification["params"] = {},
@@ -1540,8 +1542,8 @@ export class AppBridge extends Protocol<BaseContext> {
    * };
    * ```
    *
-   * @see `ListPromptsRequest` from @modelcontextprotocol/client forthe request type
-   * @see `ListPromptsResult` from @modelcontextprotocol/client forthe result type
+   * @see `ListPromptsRequest` from @modelcontextprotocol/client for the request type
+   * @see `ListPromptsResult` from @modelcontextprotocol/client for the result type
    */
   private _onlistprompts?: (
     params: ListPromptsRequest["params"],
@@ -1582,12 +1584,12 @@ export class AppBridge extends Protocol<BaseContext> {
    * @example
    * ```typescript
    * // In your MCP client notification handler:
-   * mcpClient.setNotificationHandler(PromptListChangedNotificationSchema, () => {
+   * mcpClient.setNotificationHandler("notifications/prompts/list_changed", () => {
    *   bridge.sendPromptListChanged();
    * });
    * ```
    *
-   * @see `PromptListChangedNotification` from @modelcontextprotocol/client forthe notification type
+   * @see `PromptListChangedNotification` from @modelcontextprotocol/client for the notification type
    */
   sendPromptListChanged(params: PromptListChangedNotification["params"] = {}) {
     return this.notification({

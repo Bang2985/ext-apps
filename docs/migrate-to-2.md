@@ -27,7 +27,7 @@ host-side deltas are in error responses (see below).
 | CDN / `*-with-deps` | nothing extra: `./app-with-deps` and `./react-with-deps` bundle client, core and zod (about 25% larger than the 1.x bundles) |
 
 `@modelcontextprotocol/client` is a required peer (`App` and `AppBridge` extend
-its `Protocol` class); `@modelcontextprotocol/core` is installed transitively;
+its `Protocol` class); `@modelcontextprotocol/core` is a required peer that `client` already depends on, so npm installs it without you listing it;
 `@modelcontextprotocol/server` stays optional and is only needed for the
 `./server` helpers. Node.js 20+ is required.
 
@@ -48,8 +48,10 @@ its `Protocol` class); `@modelcontextprotocol/core` is installed transitively;
   `extra.mcpReq.id`.
 - **`setRequestHandler` / `setNotificationHandler` take method names.**
   `app.setRequestHandler(SomeRequestSchema, handler)` becomes
-  `app.setRequestHandler("some/method", handler)` (pass the params schema as the
-  optional extra argument for validation).
+  `app.setRequestHandler("some/method", { params: SomeParamsSchema }, (params, ctx) => …)`
+  for custom methods (the handler receives the parsed params); the two-argument
+  `setRequestHandler("tools/call", handler)` form exists only for spec-defined
+  method names.
 - **Errors.** Remote JSON-RPC errors are `ProtocolError` (numeric `code`);
   local conditions are `SdkError` with a string `code`: request timeout →
   `"REQUEST_TIMEOUT"`, connection closed → `"CONNECTION_CLOSED"`. Cancelling a
@@ -74,10 +76,15 @@ The published `./schema.json` export is regenerated from the 2.x core schemas:
 
 - `McpUiToolResultNotification.params.structuredContent` is any JSON value (was
   `type: "object"`).
-- Result `_meta` documents `io.modelcontextprotocol/serverInfo` and no longer
-  lists `progressToken` / `related-task` (both still pass through).
-- `McpUiHostContext.toolInfo.tool.inputSchema` is a loose object.
-- A recursive `$defs.__schema0` JSON-value definition is added.
+- `McpUiToolResultNotification.params._meta` documents
+  `io.modelcontextprotocol/serverInfo` and no longer lists `progressToken` /
+  `related-task` (both still pass through).
+- `McpUiHostContext.toolInfo.tool.outputSchema` is a loose object (only
+  `$schema` is documented); `inputSchema.properties` values are now typed as
+  JSON values.
+- A recursive JSON-value definition (`__schema0`) is added under the `$defs` of
+  `McpUiHostContext`, `McpUiHostContextChangedNotification` and
+  `McpUiInitializeResult`.
 
 ## Checklist
 
@@ -87,7 +94,8 @@ The published `./schema.json` export is regenerated from the 2.x core schemas:
    `@modelcontextprotocol/server`, `sdk/server/streamableHttp.js` →
    `NodeStreamableHTTPServerTransport` from `@modelcontextprotocol/node`,
    `sdk/server/stdio.js` → `@modelcontextprotocol/server/stdio`, `sdk/types.js`
-   → `@modelcontextprotocol/client` or `server`).
+   → `@modelcontextprotocol/client` or `server` for the types,
+   `@modelcontextprotocol/core` for the zod schemas).
 3. Wrap raw zod shapes with `z.object({...})`.
 4. Update custom handlers to the `extra.mcpReq.*` context and method-keyed
    `setRequestHandler` calls.
