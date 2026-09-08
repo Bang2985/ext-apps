@@ -3,8 +3,8 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type ServerCapabilities } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
-import { App } from "./app";
-import { LATEST_PROTOCOL_VERSION } from "./types";
+import { App } from "./app.js";
+import { LATEST_PROTOCOL_VERSION } from "./types.js";
 import {
   AppBridge,
   buildAllowAttribute,
@@ -13,7 +13,7 @@ import {
   isToolVisibilityAppOnly,
   McpUiOpenLinkResultSchema,
   type McpUiHostCapabilities,
-} from "./app-bridge";
+} from "./app-bridge.js";
 
 /** Wait for pending microtasks to complete */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));

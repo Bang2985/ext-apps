@@ -22,10 +22,10 @@ import {
   type Transport,
 } from "@modelcontextprotocol/client";
 import { EmptyResultSchema } from "@modelcontextprotocol/core";
-export { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./constants";
-import { EventDispatcher } from "./events";
-export { EventDispatcher } from "./events";
-import { PostMessageTransport } from "./message-transport";
+export { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./constants.js";
+import { EventDispatcher } from "./events.js";
+export { EventDispatcher } from "./events.js";
+import { PostMessageTransport } from "./message-transport.js";
 import {
   LATEST_PROTOCOL_VERSION,
   McpUiAppCapabilities,
@@ -59,12 +59,12 @@ import {
   McpUiToolResultNotificationSchema,
   McpUiRequestDisplayModeRequest,
   McpUiRequestDisplayModeResultSchema,
-} from "./types";
+} from "./types.js";
 import {
   StandardSchemaV1,
   standardSchemaToJsonSchema,
   validateStandardSchema,
-} from "./standard-schema";
+} from "./standard-schema.js";
 import { z, type ZodLiteral, type ZodObject, type ZodType } from "zod/v4";
 
 type MethodSchema = ZodObject<{
@@ -92,16 +92,16 @@ function mergeAppCapabilities(
 export type {
   StandardSchemaV1,
   StandardSchemaWithJSON,
-} from "./standard-schema";
+} from "./standard-schema.js";
 
-export { PostMessageTransport } from "./message-transport";
-export * from "./types";
+export { PostMessageTransport } from "./message-transport.js";
+export * from "./types.js";
 export {
   applyHostStyleVariables,
   applyHostFonts,
   getDocumentTheme,
   applyDocumentTheme,
-} from "./styles";
+} from "./styles.js";
 
 /**
  * Metadata key for associating a UI resource URI with a tool.
