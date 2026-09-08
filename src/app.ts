@@ -24,6 +24,12 @@ import {
 import { EmptyResultSchema } from "@modelcontextprotocol/core";
 export { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from "./constants.js";
 import { EventDispatcher, MethodRegistry } from "./events.js";
+import {
+  toModernArgs,
+  type LegacyMethodSchema,
+  type LegacyNotificationHandler,
+  type LegacyRequestHandler,
+} from "./legacy-handlers.js";
 export { EventDispatcher } from "./events.js";
 
 import { PostMessageTransport } from "./message-transport.js";
@@ -316,11 +322,14 @@ export class App extends Protocol<BaseContext> {
    *
    * @throws {Error} if a handler for this method is already registered.
    */
-  override setRequestHandler: Protocol<BaseContext>["setRequestHandler"] = (
-    method: string,
-    ...rest: unknown[]
-  ) => {
-    this._methods.claim(method, "setRequestHandler");
+  override setRequestHandler: Protocol<BaseContext>["setRequestHandler"] &
+    (<S extends LegacyMethodSchema>(
+      /** @deprecated Pass the method name and `{ params }` instead. */
+      schema: S,
+      handler: LegacyRequestHandler<S>,
+    ) => void) = (...args: unknown[]) => {
+    const [method, ...rest] = toModernArgs("request", args) ?? args;
+    this._methods.claim(method as string, "setRequestHandler");
     (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
       this,
       method,
@@ -335,15 +344,20 @@ export class App extends Protocol<BaseContext> {
    *
    * @throws {Error} if a handler for this method is already registered.
    */
-  override setNotificationHandler: Protocol<BaseContext>["setNotificationHandler"] =
-    (method: string, ...rest: unknown[]) => {
-      this._methods.claim(method, "setNotificationHandler");
-      (super.setNotificationHandler as unknown as UntypedHandlerSetter).call(
-        this,
-        method,
-        ...rest,
-      );
-    };
+  override setNotificationHandler: Protocol<BaseContext>["setNotificationHandler"] &
+    (<S extends LegacyMethodSchema>(
+      /** @deprecated Pass the method name and `{ params }` instead. */
+      schema: S,
+      handler: LegacyNotificationHandler<S>,
+    ) => void) = (...args: unknown[]) => {
+    const [method, ...rest] = toModernArgs("notification", args) ?? args;
+    this._methods.claim(method as string, "setNotificationHandler");
+    (super.setNotificationHandler as unknown as UntypedHandlerSetter).call(
+      this,
+      method,
+      ...rest,
+    );
+  };
 
   override removeRequestHandler: Protocol<BaseContext>["removeRequestHandler"] =
     (method: string) => {
