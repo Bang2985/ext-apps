@@ -5,7 +5,7 @@
   "description": "MCP App example demonstrating lazy (on-demand) OAuth: public tools work unauthenticated, protected tools return 401 + WWW-Authenticate so the host runs the OAuth flow only when needed",
   "repository": {
     "type": "git",
-    "url": "https://github.com/modelcontextprotocol/ext-apps",
+    "url": "git+https://github.com/modelcontextprotocol/ext-apps.git",
     "directory": "examples/lazy-auth-server"
   },
   "license": "MIT",

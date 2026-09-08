@@ -5,7 +5,7 @@
   "description": "MCP App Server for rendering and playing sheet music from ABC notation",
   "repository": {
     "type": "git",
-    "url": "https://github.com/modelcontextprotocol/ext-apps",
+    "url": "git+https://github.com/modelcontextprotocol/ext-apps.git",
     "directory": "examples/sheet-music-server"
   },
   "license": "MIT",

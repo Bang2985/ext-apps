@@ -5,7 +5,7 @@
   "description": "Wikipedia link explorer MCP App Server with graph visualization",
   "repository": {
     "type": "git",
-    "url": "https://github.com/modelcontextprotocol/ext-apps",
+    "url": "git+https://github.com/modelcontextprotocol/ext-apps.git",
     "directory": "examples/wiki-explorer-server"
   },
   "license": "MIT",
