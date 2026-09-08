@@ -76,10 +76,12 @@
     "update-lock:docker": "rm -rf node_modules package-lock.json examples/*/node_modules && docker run --rm --platform linux/amd64 -v $(pwd):/work -w /work -e HOME=/tmp node:latest npm i --registry=https://registry.npmjs.org/ --ignore-scripts && rm -rf node_modules examples/*/node_modules && npm i --registry=https://registry.npmjs.org/"
   },
   "author": "Olivier Chafik",
+  "//interop": "The @modelcontextprotocol/sdk 1.x and ext-apps-v1 devDependencies exist only for src/interop-v1.test.ts, which runs the published 1.7.5 package against this build. The library does not use them.",
   "devDependencies": {
     "@boneskull/typedoc-plugin-mermaid": "^0.2.0",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/core": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@modelcontextprotocol/server": "2.0.0",
     "@playwright/test": "1.57.0",
     "@types/bun": "^1.3.2",
@@ -95,6 +97,7 @@
     "electron-to-chromium": "1.5.267",
     "esbuild": "^0.25.12",
     "express": "^5.1.0",
+    "ext-apps-v1": "npm:@modelcontextprotocol/ext-apps@1.7.5",
     "husky": "^9.1.7",
     "nodemon": "^3.1.0",
     "playwright": "1.57.0",
