@@ -147,8 +147,10 @@ jobs:
 
       - run: npm ci
 
+      # Headless runs without a channel use chromium-headless-shell, so the
+      # full Chromium build (about 165 MB) would only be downloaded, never run.
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps --only-shell chromium
 
       - name: Run E2E tests
         run: npx playwright test --reporter=list
@@ -180,9 +182,14 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
           sudo apt-get install -y nodejs
 
+      # The checkout lives on the Windows drive, which WSL reaches over 9P;
+      # writing node_modules there is what makes this job slow (npm ci alone
+      # took about 3 minutes). Copy the tree onto the distro's ext4 filesystem
+      # first, as Microsoft's WSL guidance recommends for anything I/O heavy.
       - name: Build and test in WSL
         shell: wsl-bash {0}
         run: |
+          cp -r "$(pwd)" ~/ext-apps && cd ~/ext-apps
           npm ci
           npm run build
           npm run examples:build
