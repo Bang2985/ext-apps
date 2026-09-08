@@ -37,9 +37,8 @@ import {
 import { EventDispatcher, MethodRegistry } from "./events.js";
 import {
   toModernArgs,
-  type LegacyMethodSchema,
-  type LegacyNotificationHandler,
-  type LegacyRequestHandler,
+  type LegacyNotificationHandlerSetter,
+  type LegacyRequestHandlerSetter,
 } from "./legacy-handlers.js";
 import type { ZodLiteral, ZodObject, ZodType } from "zod/v4";
 
@@ -330,12 +329,9 @@ export class AppBridge extends Protocol<BaseContext> {
    *
    * @throws {Error} if a handler for this method is already registered.
    */
-  override setRequestHandler: Protocol<BaseContext>["setRequestHandler"] &
-    (<S extends LegacyMethodSchema>(
-      /** @deprecated Pass the method name and `{ params }` instead. */
-      schema: S,
-      handler: LegacyRequestHandler<S>,
-    ) => void) = (...args: unknown[]) => {
+  override setRequestHandler: LegacyRequestHandlerSetter<
+    Protocol<BaseContext>["setRequestHandler"]
+  > = (...args: unknown[]) => {
     const [method, ...rest] = toModernArgs("request", args) ?? args;
     this._methods.claim(method as string, "setRequestHandler");
     (super.setRequestHandler as unknown as UntypedHandlerSetter).call(
@@ -352,12 +348,9 @@ export class AppBridge extends Protocol<BaseContext> {
    *
    * @throws {Error} if a handler for this method is already registered.
    */
-  override setNotificationHandler: Protocol<BaseContext>["setNotificationHandler"] &
-    (<S extends LegacyMethodSchema>(
-      /** @deprecated Pass the method name and `{ params }` instead. */
-      schema: S,
-      handler: LegacyNotificationHandler<S>,
-    ) => void) = (...args: unknown[]) => {
+  override setNotificationHandler: LegacyNotificationHandlerSetter<
+    Protocol<BaseContext>["setNotificationHandler"]
+  > = (...args: unknown[]) => {
     const [method, ...rest] = toModernArgs("notification", args) ?? args;
     this._methods.claim(method as string, "setNotificationHandler");
     (super.setNotificationHandler as unknown as UntypedHandlerSetter).call(
