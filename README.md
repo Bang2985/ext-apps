@@ -11,7 +11,7 @@
     <br /><br />
     <a href="#why-mcp-apps">Why</a>
     ·
-    <a href="https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html">Quickstart</a>
+    <a href="https://apps.extensions.modelcontextprotocol.io/api/documents/quickstart.html">Quickstart</a>
     ·
     <a href="https://apps.extensions.modelcontextprotocol.io/api/">API Docs</a>
     ·
@@ -151,7 +151,7 @@ in a 1.x host and a 2.x host renders 1.x Views. See the
 when upgrading from 1.x.
 
 **New here?** Start with the
-[Quickstart Guide](https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html)
+[Quickstart Guide](https://apps.extensions.modelcontextprotocol.io/api/documents/quickstart.html)
 to build your first MCP App.
 
 ## Using the SDK
@@ -272,7 +272,7 @@ point your client at a local build:
 
 ## Resources
 
-- [Quickstart Guide](https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html)
+- [Quickstart Guide](https://apps.extensions.modelcontextprotocol.io/api/documents/quickstart.html)
 - [API Documentation](https://apps.extensions.modelcontextprotocol.io/api/)
 - [Specification (2026-01-26)](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
   ([Draft](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx))

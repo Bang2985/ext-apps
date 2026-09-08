@@ -37,6 +37,33 @@ export type LegacyNotificationHandler<S extends LegacyMethodSchema> = (
 ) => void | Promise<void>;
 
 /**
+ * `setRequestHandler` with the 1.x `(Schema, handler)` form kept as a
+ * deprecated overload next to the 2.x forms in `Modern`.
+ */
+export type LegacyRequestHandlerSetter<Modern> = Modern & {
+  /**
+   * @deprecated 1.x form. Pass the method name and `{ params }` instead;
+   * removed in 3.0.
+   */
+  <S extends LegacyMethodSchema>(
+    schema: S,
+    handler: LegacyRequestHandler<S>,
+  ): void;
+};
+
+/** `setNotificationHandler` counterpart of {@link LegacyRequestHandlerSetter}. */
+export type LegacyNotificationHandlerSetter<Modern> = Modern & {
+  /**
+   * @deprecated 1.x form. Pass the method name and `{ params }` instead;
+   * removed in 3.0.
+   */
+  <S extends LegacyMethodSchema>(
+    schema: S,
+    handler: LegacyNotificationHandler<S>,
+  ): void;
+};
+
+/**
  * Arguments for the 2.x three-argument `setRequestHandler` /
  * `setNotificationHandler` form.
  */
