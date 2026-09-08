@@ -41,8 +41,9 @@ its `Protocol` class); `@modelcontextprotocol/core` is a required peer that `cli
   Valibot. Raw zod shapes (`{ q: z.string() }`) still work with
   `registerAppTool` but are deprecated; wrap them with `z.object({...})`.
 - **`App` / `AppBridge` extend `Protocol` from `@modelcontextprotocol/client`.**
-  `ProtocolWithEvents`, `AppRequest`, `AppNotification` and `AppResult` are
-  gone; use the SDK's `Protocol`, `Request`, `Notification` and `Result`.
+  `ProtocolWithEvents` is gone; use the SDK's `Protocol`. The `AppRequest`,
+  `AppNotification` and `AppResult` unions are kept as deprecated type
+  aliases (nothing in 2.x consumes them) and will be removed in 3.0.
 - **Handler context.** Custom handlers receive the SDK 2.x context:
   `extra.signal` → `extra.mcpReq.signal`, `extra.requestId` →
   `extra.mcpReq.id`.
@@ -51,7 +52,11 @@ its `Protocol` class); `@modelcontextprotocol/core` is a required peer that `cli
   `app.setRequestHandler("some/method", { params: SomeParamsSchema }, (params, ctx) => …)`
   for custom methods (the handler receives the parsed params); the two-argument
   `setRequestHandler("tools/call", handler)` form exists only for spec-defined
-  method names.
+  method names. The 1.x `(Schema, handler)` form still works on `App` and
+  `AppBridge` as a deprecated overload: it logs a one-time warning, hands the
+  handler the whole `{ method, params }` message as before, and gives request
+  handlers a 1.x-shaped `extra` (`signal`, `requestId`, `sessionId`, `_meta`).
+  It will be removed in 3.0.
 - **Errors.** Remote JSON-RPC errors are `ProtocolError` (numeric `code`);
   local conditions are `SdkError` with a string `code`: request timeout →
   `"REQUEST_TIMEOUT"`, connection closed → `"CONNECTION_CLOSED"`. Cancelling a

@@ -9,6 +9,55 @@
  * @see `generated/schema.test.ts` for compile-time verification
  */
 
+import type {
+  CallToolRequest,
+  CallToolResult,
+  CreateMessageRequest,
+  CreateMessageResult,
+  CreateMessageResultWithTools,
+  EmptyResult,
+  ListPromptsRequest,
+  ListPromptsResult,
+  ListResourceTemplatesRequest,
+  ListResourceTemplatesResult,
+  ListResourcesRequest,
+  ListResourcesResult,
+  ListToolsRequest,
+  ListToolsResult,
+  LoggingMessageNotification,
+  PingRequest,
+  PromptListChangedNotification,
+  ReadResourceRequest,
+  ReadResourceResult,
+  ResourceListChangedNotification,
+  ToolListChangedNotification,
+} from "@modelcontextprotocol/client";
+import type {
+  McpUiDownloadFileRequest,
+  McpUiDownloadFileResult,
+  McpUiHostContextChangedNotification,
+  McpUiInitializeRequest,
+  McpUiInitializeResult,
+  McpUiInitializedNotification,
+  McpUiMessageRequest,
+  McpUiMessageResult,
+  McpUiOpenLinkRequest,
+  McpUiOpenLinkResult,
+  McpUiRequestDisplayModeRequest,
+  McpUiRequestDisplayModeResult,
+  McpUiRequestTeardownNotification,
+  McpUiResourceTeardownRequest,
+  McpUiResourceTeardownResult,
+  McpUiSandboxProxyReadyNotification,
+  McpUiSandboxResourceReadyNotification,
+  McpUiSizeChangedNotification,
+  McpUiToolCancelledNotification,
+  McpUiToolInputNotification,
+  McpUiToolInputPartialNotification,
+  McpUiToolResultNotification,
+  McpUiUpdateModelContextRequest,
+} from "./spec.types.js";
+
 // Re-export all types from spec.types.ts
 export {
   LATEST_PROTOCOL_VERSION,
@@ -108,3 +157,71 @@ export {
   McpUiToolVisibilitySchema,
   McpUiToolMetaSchema,
 } from "./generated/schema.js";
+
+/**
+ * Union of every request an {@link app!App `App`} may send or receive.
+ *
+ * @deprecated 1.x fed this to the SDK's `Protocol` generics; SDK 2.x derives
+ * request types from the method name, so nothing consumes it anymore.
+ */
+export type AppRequest =
+  | McpUiInitializeRequest
+  | McpUiOpenLinkRequest
+  | McpUiDownloadFileRequest
+  | McpUiMessageRequest
+  | McpUiUpdateModelContextRequest
+  | McpUiResourceTeardownRequest
+  | McpUiRequestDisplayModeRequest
+  | CallToolRequest
+  | ListToolsRequest
+  | ListResourcesRequest
+  | ListResourceTemplatesRequest
+  | ReadResourceRequest
+  | ListPromptsRequest
+  | CreateMessageRequest
+  | PingRequest;
+
+/**
+ * Union of every notification an {@link app!App `App`} may send or receive.
+ *
+ * @deprecated See {@link AppRequest}.
+ */
+export type AppNotification =
+  // Sent to app
+  | McpUiHostContextChangedNotification
+  | McpUiToolInputNotification
+  | McpUiToolInputPartialNotification
+  | McpUiToolResultNotification
+  | McpUiToolCancelledNotification
+  | McpUiSandboxResourceReadyNotification
+  | ToolListChangedNotification
+  | ResourceListChangedNotification
+  | PromptListChangedNotification
+  // Received from app
+  | McpUiInitializedNotification
+  | McpUiSizeChangedNotification
+  | McpUiSandboxProxyReadyNotification
+  | McpUiRequestTeardownNotification
+  | LoggingMessageNotification;
+
+/**
+ * Union of every result an {@link app!App `App`} may send or receive.
+ *
+ * @deprecated See {@link AppRequest}.
+ */
+export type AppResult =
+  | McpUiInitializeResult
+  | McpUiOpenLinkResult
+  | McpUiDownloadFileResult
+  | McpUiMessageResult
+  | McpUiResourceTeardownResult
+  | McpUiRequestDisplayModeResult
+  | CallToolResult
+  | ListToolsResult
+  | ListResourcesResult
+  | ListResourceTemplatesResult
+  | ReadResourceResult
+  | ListPromptsResult
+  | CreateMessageResult
+  | CreateMessageResultWithTools
+  | EmptyResult;
