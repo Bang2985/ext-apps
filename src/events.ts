@@ -89,3 +89,44 @@ export class EventDispatcher<EventMap extends Record<string, unknown>> {
     return slot;
   }
 }
+
+/**
+ * Tracks which JSON-RPC methods already have a handler registered through the
+ * owning `App` / `AppBridge`, so a second direct `setRequestHandler` /
+ * `setNotificationHandler` call for the same method throws instead of
+ * silently replacing the first handler (the base SDK `Protocol` replaces).
+ *
+ * The `on*` setters use {@link replace} for DOM-style replace semantics, and
+ * `removeRequestHandler` / `removeNotificationHandler` use {@link release}.
+ *
+ * @internal
+ */
+export class MethodRegistry {
+  private readonly _methods = new Set<string>();
+
+  /** Claim `method`. Throws if a handler is already registered for it. */
+  claim(method: string, via: string): void {
+    if (this._methods.has(method)) {
+      throw new Error(
+        `Handler for "${method}" already registered (via ${via}). ` +
+          `Use addEventListener() to attach multiple listeners, ` +
+          `or the on* setter for replace semantics.`,
+      );
+    }
+    this._methods.add(method);
+  }
+
+  /** Claim `method` with replace semantics (never throws). */
+  replace(method: string): void {
+    this._methods.add(method);
+  }
+
+  /** Release `method` so it can be claimed again. */
+  release(method: string): void {
+    this._methods.delete(method);
+  }
+
+  has(method: string): boolean {
+    return this._methods.has(method);
+  }
+}

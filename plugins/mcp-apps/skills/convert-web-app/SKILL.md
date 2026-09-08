@@ -115,12 +115,14 @@ Create a new MCP server with tool and resource registration. This wraps the exis
 ### Dependencies
 
 ```bash
-npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@2.0.0-beta.5 @modelcontextprotocol/core@2.0.0-beta.5 @modelcontextprotocol/server@2.0.0-beta.5 zod@^4.2.0
+npm install @modelcontextprotocol/ext-apps @modelcontextprotocol/client@^2.0.0 @modelcontextprotocol/server@^2.0.0 zod@^4.2.0
 npm install -D tsx vite vite-plugin-singlefile
 ```
 
-Use `npm install` with the exact base MCP SDK prerelease required by ext-apps.
-Do not substitute unpublished local packages or guess a different prerelease.
+Use `npm install` so the package manager resolves versions; ext-apps 2.x needs
+the split base MCP SDK packages at `^2.0.0` (`@modelcontextprotocol/core` comes
+in transitively). Do not add the legacy `@modelcontextprotocol/sdk` v1 package
+or substitute unpublished local packages.
 
 ### Server Code
 

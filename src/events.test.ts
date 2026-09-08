@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from "bun:test";
 
-import { EventDispatcher } from "./events";
+import { EventDispatcher } from "./events.js";
 
 type TestEventMap = {
   change: { value: number };

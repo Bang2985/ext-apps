@@ -22,10 +22,12 @@
  *
  * **Problem**: ts-to-zod cannot resolve types imported from external packages.
  * When it encounters types like `ContentBlock`, `CallToolResult`, `Implementation`,
- * `RequestId`, and `Tool` from `@modelcontextprotocol/core`, it generates `z.any()`
- * as a placeholder.
+ * `RequestId`, and `Tool` (imported by spec.types.ts from
+ * `@modelcontextprotocol/client`), it generates `z.any()` as a placeholder.
  *
- * **Solution**: Import the schemas from MCP SDK and remove the z.any() placeholders.
+ * **Solution**: Import the corresponding Zod schemas from
+ * `@modelcontextprotocol/core` (the role-neutral package both client and
+ * server re-export) and remove the z.any() placeholders.
  *
  * ### 3. Index Signatures (`z.record().and()` → `z.object().passthrough()`)
  *

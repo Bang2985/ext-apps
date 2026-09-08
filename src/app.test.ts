@@ -6,13 +6,13 @@ import {
 } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 
-import { App } from "./app";
+import { App } from "./app.js";
 import {
   LATEST_PROTOCOL_VERSION,
   McpUiInitializeRequestSchema,
   McpUiInitializeResultSchema,
   McpUiInitializedNotificationSchema,
-} from "./types";
+} from "./types.js";
 
 type ConnectedPair = {
   app: App;
@@ -248,25 +248,62 @@ describe("App base MCP SDK v2 Protocol migration", () => {
     }).toThrow(/handler registered after connect/);
   });
 
-  it("uses base MCP SDK replacement semantics for request handlers", async () => {
+  it("direct setRequestHandler throws when a handler is already registered", async () => {
     const pair = await connectPair();
     connected.push(pair);
+    const params = z.object({});
     let handledBy = 0;
 
-    pair.app.setRequestHandler("ping", () => {
+    pair.app.setRequestHandler("test/method", { params }, () => {
       handledBy = 1;
       return {};
     });
-    pair.app.setRequestHandler("ping", () => {
+    expect(() => {
+      pair.app.setRequestHandler("test/method", { params }, () => {
+        handledBy = 2;
+        return {};
+      });
+    }).toThrow(/already registered/);
+
+    await pair.server.request(
+      { method: "test/method", params: {} },
+      z.object({}),
+    );
+    expect(handledBy).toBe(1);
+  });
+
+  it("direct setRequestHandler throws for methods owned by the App itself", async () => {
+    const pair = await connectPair();
+    connected.push(pair);
+    expect(() => {
+      pair.app.setRequestHandler("ping", () => ({}));
+    }).toThrow(/already registered/);
+  });
+
+  it("removeRequestHandler releases the method for re-registration", async () => {
+    const pair = await connectPair();
+    connected.push(pair);
+    const params = z.object({});
+    let handledBy = 0;
+
+    pair.app.setRequestHandler("test/method", { params }, () => {
+      handledBy = 1;
+      return {};
+    });
+    pair.app.removeRequestHandler("test/method");
+    pair.app.setRequestHandler("test/method", { params }, () => {
       handledBy = 2;
       return {};
     });
 
-    await pair.server.request({ method: "ping", params: {} });
+    await pair.server.request(
+      { method: "test/method", params: {} },
+      z.object({}),
+    );
     expect(handledBy).toBe(2);
   });
 
-  it("uses base MCP SDK replacement semantics for non-event notifications", async () => {
+  it("direct setNotificationHandler throws when a handler is already registered", async () => {
     const pair = await connectPair();
     connected.push(pair);
     const calls: number[] = [];
@@ -275,14 +312,70 @@ describe("App base MCP SDK v2 Protocol migration", () => {
     pair.app.setNotificationHandler("test/notification", { params }, () => {
       calls.push(1);
     });
-    pair.app.setNotificationHandler("test/notification", { params }, () => {
-      calls.push(2);
-    });
+    expect(() => {
+      pair.app.setNotificationHandler("test/notification", { params }, () => {
+        calls.push(2);
+      });
+    }).toThrow(/already registered/);
     await pair.server.notification({
       method: "test/notification",
       params: {},
     });
 
-    expect(calls).toEqual([2]);
+    expect(calls).toEqual([1]);
+  });
+
+  it("direct setNotificationHandler throws for event-mapped methods (listener first)", () => {
+    const app = new App(
+      { name: "view-app", version: "1.0.0" },
+      {},
+      { autoResize: false },
+    );
+    app.addEventListener("toolinput", () => {});
+    expect(() => {
+      app.setNotificationHandler(
+        "ui/notifications/tool-input",
+        { params: z.object({}) },
+        () => {},
+      );
+    }).toThrow(/already registered/);
+  });
+
+  it("event registration throws when a direct handler already owns the method", () => {
+    const app = new App(
+      { name: "view-app", version: "1.0.0" },
+      {},
+      { autoResize: false },
+    );
+    app.setNotificationHandler(
+      "ui/notifications/tool-input",
+      { params: z.object({}) },
+      () => {},
+    );
+    expect(() => {
+      app.ontoolinput = () => {};
+    }).toThrow(/already registered/);
+    expect(() => {
+      app.addEventListener("toolinput", () => {});
+    }).toThrow(/already registered/);
+  });
+
+  it("on* request setters keep replace semantics", async () => {
+    const pair = await connectPair();
+    connected.push(pair);
+    let handledBy = 0;
+    pair.app.onteardown = async () => {
+      handledBy = 1;
+      return {};
+    };
+    pair.app.onteardown = async () => {
+      handledBy = 2;
+      return {};
+    };
+    await pair.server.request(
+      { method: "ui/resource-teardown", params: {} },
+      z.object({}),
+    );
+    expect(handledBy).toBe(2);
   });
 });

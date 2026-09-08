@@ -1551,40 +1551,9 @@ describe("App <-> AppBridge integration", () => {
         ).rejects.toThrow(/Invalid input for tool translate/);
       });
 
-      it("falls back to z.toJSONSchema for zod schemas lacking ~standard.jsonSchema (zod v3.25.x)", async () => {
-        // zod v3.25 implements ~standard.validate but not ~standard.jsonSchema.
-        // Simulate by stripping jsonSchema from a real zod schema.
-        const v4Schema = z.object({ q: z.string() });
-        const zod3LikeSchema = Object.assign(Object.create(v4Schema), {
-          "~standard": {
-            version: 1 as const,
-            vendor: "zod",
-            validate: v4Schema["~standard"].validate,
-            types: undefined as
-              | undefined
-              | {
-                  readonly input: { q: string };
-                  readonly output: { q: string };
-                },
-            // no jsonSchema
-          },
-        });
-
+      it("rejects listTools when a tool schema does not implement Standard JSON Schema", async () => {
         const appCapabilities = { tools: { listChanged: true } };
         app = new App(testAppInfo, appCapabilities, { autoResize: false });
-        app.registerTool(
-          "search",
-          { inputSchema: zod3LikeSchema },
-          async ({ q }: { q: string }) => ({
-            content: [{ type: "text" as const, text: q }],
-          }),
-        );
-        await app.connect(appTransport);
-
-        const list = await bridge.listTools({});
-        expect(list.tools[0].inputSchema.properties).toHaveProperty("q");
-
-        // Non-zod schema without jsonSchema → listTools rejects with guidance.
         app.registerTool(
           "broken",
           {
@@ -1598,6 +1567,8 @@ describe("App <-> AppBridge integration", () => {
           },
           async () => ({ content: [] }),
         );
+        await app.connect(appTransport);
+
         expect(bridge.listTools({})).rejects.toThrow(
           /does not implement Standard JSON Schema/,
         );
@@ -3016,16 +2987,95 @@ describe("isToolVisibilityAppOnly", () => {
       expect(app.onteardown).toBe(handler);
     });
 
-    it("direct setRequestHandler uses base SDK replacement semantics", () => {
+    it("direct setRequestHandler throws when called twice", () => {
       const bridge2 = new AppBridge(
         createMockClient() as Client,
         testHostInfo,
         testHostCapabilities,
       );
-      bridge2.setRequestHandler("ping", () => ({}));
+      const params = z.object({});
+      bridge2.setRequestHandler("test/method", { params }, () => ({}));
       expect(() => {
-        bridge2.setRequestHandler("ping", () => ({}));
+        bridge2.setRequestHandler("test/method", { params }, () => ({}));
+      }).toThrow(/already registered/);
+    });
+
+    it("direct setRequestHandler cannot silently replace an on* host handler", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.onopenlink = async () => ({});
+      expect(() => {
+        bridge2.setRequestHandler(
+          "ui/open-link",
+          { params: z.object({}) },
+          () => ({}),
+        );
+      }).toThrow(/already registered/);
+    });
+
+    it("direct setNotificationHandler throws for event-mapped methods", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.onsizechange = () => {};
+      expect(() => {
+        bridge2.setNotificationHandler(
+          "ui/notifications/size-changed",
+          { params: z.object({}) },
+          () => {},
+        );
+      }).toThrow(/already registered/);
+    });
+
+    it("removeRequestHandler releases the method so an on* setter can re-register", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      bridge2.removeRequestHandler("tools/call");
+      expect(() => {
+        bridge2.setRequestHandler("tools/call", async () => ({ content: [] }));
       }).not.toThrow();
+      expect(() => {
+        bridge2.oncalltool = async () => ({ content: [] });
+      }).not.toThrow();
+    });
+
+    it("oncreatesamplingmessage has a getter, replace semantics, and a replace warning", () => {
+      const bridge2 = new AppBridge(
+        createMockClient() as Client,
+        testHostInfo,
+        testHostCapabilities,
+      );
+      expect(bridge2.oncreatesamplingmessage).toBeUndefined();
+      const first = async () => ({
+        role: "assistant" as const,
+        content: { type: "text" as const, text: "" },
+        model: "m",
+      });
+      bridge2.oncreatesamplingmessage = first;
+      expect(bridge2.oncreatesamplingmessage).toBe(first);
+
+      const warn = spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(() => {
+          bridge2.oncreatesamplingmessage = first;
+        }).not.toThrow();
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("oncreatesamplingmessage handler replaced"),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+
+      bridge2.oncreatesamplingmessage = undefined;
+      expect(bridge2.oncreatesamplingmessage).toBeUndefined();
     });
   });
 });

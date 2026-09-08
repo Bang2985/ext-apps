@@ -114,6 +114,21 @@ jobs:
           grep -q "Ready" /tmp/mcpb-smoke.log
         working-directory: examples/pdf-server
 
+  dependency-isolation:
+    name: Dependency isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run test:dependency-isolation
+
   e2e:
     runs-on: ubuntu-latest
     steps:

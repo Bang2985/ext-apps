@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -16,56 +17,102 @@ const packageJson = JSON.parse(
 const client = "@modelcontextprotocol/client";
 const server = "@modelcontextprotocol/server";
 
+// App and AppBridge extend the client package's Protocol class, so client is
+// a required peer for every consumer. The server helpers are only needed by
+// server authors, so server stays optional: View-only consumers must not have
+// it installed or bundled.
 for (const role of [client, server]) {
   if (!packageJson.peerDependencies?.[role]) {
     throw new Error(`${role} must remain a peer dependency`);
   }
-  if (packageJson.peerDependenciesMeta?.[role]?.optional !== true) {
-    throw new Error(`${role} must be an optional peer dependency`);
+}
+if (packageJson.peerDependenciesMeta?.[client]?.optional) {
+  throw new Error(`${client} must be a required peer dependency`);
+}
+if (packageJson.peerDependenciesMeta?.[server]?.optional !== true) {
+  throw new Error(`${server} must be an optional peer dependency`);
+}
+
+/**
+ * Exact version for a synthetic consumer dependency. Read from
+ * devDependencies so the consumers exercise the same SDK version the
+ * repository tests against; the check would silently drift if a range were
+ * allowed here.
+ */
+function exactDevDependency(name) {
+  const version = packageJson.devDependencies?.[name];
+  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version ?? "")) {
+    throw new Error(
+      `devDependencies["${name}"] must be an exact version, got ${JSON.stringify(version)}`,
+    );
   }
+  return version;
+}
+
+/** Exact version of a package as installed in this repository's node_modules. */
+function installedVersion(name) {
+  return JSON.parse(
+    readFileSync(join(root, "node_modules", name, "package.json"), "utf8"),
+  ).version;
 }
 
 const temporaryRoot = mkdtempSync(join(tmpdir(), "ext-apps-role-peers-"));
 try {
+  // Minimal environment: nothing inherited from the caller's npm config
+  // (registry overrides, auth tokens, npm_config_* set by an outer `npm run`)
+  // can leak into the synthetic consumers.
   const npmEnvironment = {
-    ...process.env,
+    PATH: process.env.PATH ?? process.env.Path,
+    HOME: process.env.HOME ?? process.env.USERPROFILE,
     npm_config_cache: join(temporaryRoot, "npm-cache"),
   };
-  const packOutput = JSON.parse(
-    execFileSync(
-      "npm",
-      [
-        "pack",
-        "--ignore-scripts",
-        "--json",
-        "--pack-destination",
-        temporaryRoot,
-      ],
-      { cwd: root, encoding: "utf8", env: npmEnvironment },
-    ),
+  const packDestination = join(temporaryRoot, "pack");
+  mkdirSync(packDestination);
+  // `npm pack` runs the package's `prepare` script even with --ignore-scripts
+  // (pacote's directory fetcher), and its output can pollute stdout, so do not
+  // rely on `--json`: locate the tarball on disk instead.
+  execFileSync(
+    "npm",
+    ["pack", "--ignore-scripts", "--pack-destination", packDestination],
+    { cwd: root, stdio: "pipe", env: npmEnvironment },
   );
-  const tarball = join(temporaryRoot, packOutput[0].filename);
+  const tarballs = readdirSync(packDestination).filter((name) =>
+    name.endsWith(".tgz"),
+  );
+  if (tarballs.length !== 1) {
+    throw new Error(`expected exactly one tarball, found ${tarballs}`);
+  }
+  const tarball = join(packDestination, tarballs[0]);
 
   const consumers = [
     {
+      // View / host author: ext-apps + client (+ react for the hooks entry).
       name: "app-only",
       dependencies: {
-        "@types/node": packageJson.devDependencies["@types/node"],
-        [client]: packageJson.devDependencies[client],
+        "@types/node": exactDevDependency("@types/node"),
+        "@types/react": installedVersion("@types/react"),
+        [client]: exactDevDependency(client),
         "@modelcontextprotocol/ext-apps": `file:${tarball}`,
+        react: installedVersion("react"),
       },
       absent: server,
+      // server must be neither installed (it is an optional peer) nor bundled.
+      mustNotInstall: true,
       entry:
-        'import { App } from "@modelcontextprotocol/ext-apps"; import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge"; console.log(App, AppBridge);',
+        'import { App } from "@modelcontextprotocol/ext-apps"; import { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge"; import { useApp } from "@modelcontextprotocol/ext-apps/react"; console.log(App, AppBridge, useApp);',
     },
     {
+      // Server author: ext-apps + server. npm auto-installs client as a
+      // required peer (its types back the shared wire types), but the server
+      // entry must not pull it into a runtime bundle.
       name: "server-only",
       dependencies: {
-        "@types/node": packageJson.devDependencies["@types/node"],
+        "@types/node": exactDevDependency("@types/node"),
         "@modelcontextprotocol/ext-apps": `file:${tarball}`,
-        [server]: packageJson.devDependencies[server],
+        [server]: exactDevDependency(server),
       },
       absent: client,
+      mustNotInstall: false,
       entry:
         'import { registerAppTool } from "@modelcontextprotocol/ext-apps/server"; console.log(registerAppTool);',
     },
@@ -91,22 +138,24 @@ try {
         "--no-audit",
         "--no-fund",
       ],
-      { cwd: directory, stdio: "pipe", env: npmEnvironment },
+      { cwd: directory, stdio: "inherit", env: npmEnvironment },
     );
 
-    const absentPath = join(
-      directory,
-      "node_modules",
-      ...consumer.absent.split("/"),
-      "package.json",
-    );
-    try {
-      readFileSync(absentPath);
-      throw new Error(
-        `${consumer.name} unexpectedly installed ${consumer.absent}`,
+    if (consumer.mustNotInstall) {
+      const absentPath = join(
+        directory,
+        "node_modules",
+        ...consumer.absent.split("/"),
+        "package.json",
       );
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      try {
+        readFileSync(absentPath);
+        throw new Error(
+          `${consumer.name} unexpectedly installed ${consumer.absent}`,
+        );
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
 
     writeFileSync(join(directory, "entry.ts"), consumer.entry);
@@ -114,6 +163,7 @@ try {
       join(directory, "tsconfig.json"),
       JSON.stringify({
         compilerOptions: {
+          jsx: "react-jsx",
           lib: ["ES2020", "DOM"],
           module: "ESNext",
           moduleResolution: "bundler",
@@ -141,7 +191,7 @@ try {
         "--outfile=bundle.js",
         `--metafile=${metafile}`,
       ],
-      { cwd: directory, stdio: "pipe" },
+      { cwd: directory, stdio: "inherit" },
     );
     const bundleInputs = Object.keys(
       JSON.parse(readFileSync(metafile, "utf8")).inputs,
