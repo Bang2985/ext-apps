@@ -5,7 +5,7 @@
   "description": "Budget allocator MCP App Server with interactive visualization",
   "repository": {
     "type": "git",
-    "url": "https://github.com/modelcontextprotocol/ext-apps",
+    "url": "git+https://github.com/modelcontextprotocol/ext-apps.git",
     "directory": "examples/budget-allocator-server"
   },
   "license": "MIT",
